@@ -1,0 +1,25 @@
+[build]
+  publish = "."
+  command = ""
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options         = "DENY"
+    Referrer-Policy         = "strict-origin-when-cross-origin"
+
+[[headers]]
+  for = "/sample_data.js"
+  [headers.values]
+    Cache-Control = "public, max-age=86400"
+
+[[headers]]
+  for = "/favicon.svg"
+  [headers.values]
+    Cache-Control = "public, max-age=604800, immutable"
+
+[[redirects]]
+  from   = "/*"
+  to     = "/index.html"
+  status = 200

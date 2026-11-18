@@ -1,0 +1,2836 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VoltTrack • EV Energy & Charging Analytics</title>
+  <meta name="description" content="VoltTrack – Track EV charging sessions with charts, session logs and smart cost insights." />
+  <meta name="theme-color" content="#0f172a" />
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+  <link rel="apple-touch-icon" href="./favicon.svg" />
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#ecfdf5',
+              100: '#d1fae5',
+              400: '#34d399',
+              500: '#10b981',
+              600: '#059669',
+            },
+            electric: {
+              400: '#38bdf8',
+              500: '#0ea5e9',
+              600: '#0284c7',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- React 18, PropTypes & Recharts -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+  <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Sample Data Script -->
+  <script src="./sample_data.js"></script>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(156, 163, 175, 0.4);
+      border-radius: 9999px;
+    }
+    .dark ::-webkit-scrollbar-thumb {
+      background: rgba(75, 85, 99, 0.4);
+    }
+    .recharts-responsive-container {
+      min-width: 0;
+    }
+    /* Skeleton shimmer */
+    @keyframes shimmer { 0%{background-position:-800px 0} 100%{background-position:800px 0} }
+    .skeleton {
+      background: linear-gradient(90deg,#e2e8f0 25%,#f8fafc 50%,#e2e8f0 75%);
+      background-size: 800px 100%;
+      animation: shimmer 1.5s infinite;
+      border-radius: 0.75rem;
+    }
+    .dark .skeleton {
+      background: linear-gradient(90deg,#1e293b 25%,#334155 50%,#1e293b 75%);
+      background-size: 800px 100%;
+    }
+    /* Min touch target for mobile */
+    @media (max-width: 768px) {
+      button, input, select { min-height: 44px; }
+      .touch-sm { min-height: 36px !important; }
+    }
+    /* Toast */
+    #vt-toast {
+      position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 9999;
+      display: flex; align-items: center; gap: 0.75rem;
+      padding: 0.75rem 1.25rem; border-radius: 1rem;
+      font-size: 0.8125rem; font-weight: 600;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+      transition: opacity 0.35s, transform 0.35s;
+      pointer-events: none;
+    }
+    #vt-toast.vt-success { background:#10b981; color:#fff; }
+    #vt-toast.vt-error   { background:#ef4444; color:#fff; }
+    #vt-toast.vt-info    { background:#0ea5e9; color:#fff; }
+    #vt-toast.vt-hidden  { opacity:0; transform:translateY(0.75rem); }
+  </style>
+</head>
+<body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 min-h-screen transition-colors duration-200">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef } = React;
+    const {
+      ResponsiveContainer,
+      BarChart,
+      Bar,
+      LineChart,
+      Line,
+      PieChart,
+      Pie,
+      Cell,
+      XAxis,
+      YAxis,
+      CartesianGrid,
+      Tooltip,
+      Legend,
+      ReferenceLine
+    } = window.Recharts || {};
+
+    // --- TOAST UTILITY ---
+    let _toastTimer;
+    function showToast(msg, type = 'info') {
+      const el = document.getElementById('vt-toast');
+      if (!el) return;
+      el.textContent = msg;
+      el.className = `vt-${type}`;
+      clearTimeout(_toastTimer);
+      _toastTimer = setTimeout(() => { el.className = 'vt-hidden'; }, 3200);
+    }
+
+    // --- ERROR BOUNDARY ---
+    class ErrorBoundary extends React.Component {
+      constructor(props) { super(props); this.state = { hasError: false, msg: '' }; }
+      static getDerivedStateFromError(e) { return { hasError: true, msg: e.message }; }
+      componentDidCatch(e, info) { console.error('[VoltTrack]', e, info); }
+      render() {
+        if (this.state.hasError) {
+          return (
+            <div className="p-8 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-center space-y-3">
+              <div className="text-3xl">⚡</div>
+              <p className="font-bold text-rose-700 dark:text-rose-300">Something went wrong in this section</p>
+              <p className="text-xs text-rose-500 font-mono break-all">{this.state.msg}</p>
+              <button
+                onClick={() => this.setState({ hasError: false, msg: '' })}
+                className="mt-2 px-4 py-2 text-xs font-semibold rounded-xl bg-rose-500 hover:bg-rose-600 text-white transition"
+              >Retry</button>
+            </div>
+          );
+        }
+        return this.props.children;
+      }
+    }
+
+    // --- SKELETON CARD ---
+    function SkeletonCard() {
+      return (
+        <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+          <div className="flex items-start justify-between">
+            <div className="space-y-2 flex-1">
+              <div className="skeleton h-3 w-24" />
+              <div className="skeleton h-7 w-32" />
+            </div>
+            <div className="skeleton w-11 h-11 rounded-xl" />
+          </div>
+          <div className="pt-3 border-t border-slate-100 dark:border-slate-800/60 flex justify-between">
+            <div className="skeleton h-3 w-28" />
+            <div className="skeleton h-3 w-14" />
+          </div>
+        </div>
+      );
+    }
+
+    // --- SKELETON CHART ---
+    function SkeletonChart({ height = 220 }) {
+      return (
+        <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+          <div className="flex justify-between items-center border-b border-slate-100 dark:border-slate-800/80 pb-3">
+            <div className="space-y-1.5">
+              <div className="skeleton h-4 w-40" />
+              <div className="skeleton h-3 w-28" />
+            </div>
+            <div className="skeleton h-4 w-16" />
+          </div>
+          <div className="skeleton w-full" style={{height}} />
+        </div>
+      );
+    }
+
+    // --- EMPTY STATE ---
+    function EmptyState({ icon = '🔌', title = 'No data yet', message, action, actionLabel }) {
+      return (
+        <div className="flex flex-col items-center justify-center py-16 space-y-4 text-center">
+          <div className="text-5xl">{icon}</div>
+          <div>
+            <p className="text-lg font-bold text-slate-700 dark:text-slate-200">{title}</p>
+            {message && <p className="text-sm text-slate-500 dark:text-slate-400 mt-1 max-w-xs mx-auto">{message}</p>}
+          </div>
+          {action && (
+            <button
+              onClick={action}
+              className="mt-2 px-5 py-2.5 text-sm font-semibold rounded-xl bg-brand-500 hover:bg-brand-600 text-white transition shadow-sm shadow-brand-500/30"
+            >{actionLabel || 'Get Started'}</button>
+          )}
+        </div>
+      );
+    }
+
+    // Currency Formatter Utility for Indian Rupee (₹)
+    const formatRupee = (val) => {
+      const num = Number(val) || 0;
+      return `₹${num.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    };
+
+    // --- ICONS ---
+    const Icons = {
+      Zap: ({ className = "w-5 h-5" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+      ),
+      Dashboard: ({ className = "w-5 h-5" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+        </svg>
+      ),
+      List: ({ className = "w-5 h-5" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+        </svg>
+      ),
+      PlusCircle: ({ className = "w-5 h-5" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v3m0 0v3m0-3h3m-3-0H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+      ),
+      TrendingUp: ({ className = "w-5 h-5" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+        </svg>
+      ),
+      Sun: ({ className = "w-5 h-5" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+        </svg>
+      ),
+      Moon: ({ className = "w-5 h-5" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+        </svg>
+      ),
+      Dollar: ({ className = "w-5 h-5" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V6m0 8c-1.11 0-2.08-.402-2.599-1M12 16v2m9-6a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+      ),
+      Clock: ({ className = "w-5 h-5" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+      ),
+      Gauge: ({ className = "w-5 h-5" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l2.5 2.5M19.07 4.93a10 10 0 11-14.14 0 10 10 0 0114.14 0zM12 12a2 2 0 100-4 2 2 0 000 4z" />
+        </svg>
+      ),
+      BatteryCharging: ({ className = "w-5 h-5" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 7L6 13h5l-1 5 6-7h-5l2-4zM4 6h14a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2zM22 10v4" />
+        </svg>
+      ),
+      RefreshCw: ({ className = "w-4 h-4" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+        </svg>
+      ),
+      Menu: ({ className = "w-6 h-6" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+      ),
+      Close: ({ className = "w-6 h-6" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      ),
+      Search: ({ className = "w-4 h-4" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+        </svg>
+      ),
+      Trash: ({ className = "w-4 h-4" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+        </svg>
+      ),
+      Edit: ({ className = "w-4 h-4" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+        </svg>
+      ),
+      Download: ({ className = "w-4 h-4" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+        </svg>
+      ),
+      Upload: ({ className = "w-4 h-4" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+        </svg>
+      ),
+      Calendar: ({ className = "w-4 h-4" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
+      ),
+      SortAsc: ({ className = "w-3 h-3" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12" />
+        </svg>
+      ),
+      SortDesc: ({ className = "w-3 h-3" }) => (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 4h13M3 8h9m-9 4h9m5-4v12m0 0l-4-4m4 4l4-4" />
+        </svg>
+      )
+    };
+
+    // --- MAIN APP COMPONENT ---
+    function App() {
+      const [activeTab, setActiveTab] = useState('dashboard');
+      const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+      // Modal state for Add/Edit session
+      const [isFormModalOpen, setIsFormModalOpen] = useState(false);
+      const [sessionToEdit, setSessionToEdit] = useState(null);
+
+      const [theme, setTheme] = useState(() => {
+        const saved = localStorage.getItem('ev_tracker_theme');
+        return saved || 'dark';
+      });
+
+      useEffect(() => {
+        const root = document.documentElement;
+        if (theme === 'dark') {
+          root.classList.add('dark');
+        } else {
+          root.classList.remove('dark');
+        }
+        localStorage.setItem('ev_tracker_theme', theme);
+      }, [theme]);
+
+      const toggleTheme = () => {
+        setTheme(prev => (prev === 'dark' ? 'light' : 'dark'));
+      };
+
+      const [isReady, setIsReady] = useState(false);
+
+      const [sessions, setSessions] = useState(() => {
+        try {
+          const stored = localStorage.getItem('ev_charging_sessions');
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+          }
+        } catch (e) {
+          console.error("Failed to parse stored sessions:", e);
+        }
+        if (window.SAMPLE_CHARGING_SESSIONS && window.SAMPLE_CHARGING_SESSIONS.length > 0) {
+          localStorage.setItem('ev_charging_sessions', JSON.stringify(window.SAMPLE_CHARGING_SESSIONS));
+          return window.SAMPLE_CHARGING_SESSIONS;
+        }
+        return [];
+      });
+
+      useEffect(() => { setIsReady(true); }, []);
+
+      // Shared Date Range Filter State for Dashboard
+      const [dateFilter, setDateFilter] = useState({
+        preset: 'all',
+        startDate: '2026-05-18',
+        endDate: '2026-11-18'
+      });
+
+      useEffect(() => {
+        const handleDataLoaded = (e) => {
+          if (!sessions || sessions.length === 0) {
+            const data = e.detail || window.SAMPLE_CHARGING_SESSIONS;
+            if (data && data.length > 0) {
+              setSessions(data);
+              localStorage.setItem('ev_charging_sessions', JSON.stringify(data));
+            }
+          }
+        };
+        window.addEventListener('ev_data_loaded', handleDataLoaded);
+        return () => window.removeEventListener('ev_data_loaded', handleDataLoaded);
+      }, [sessions]);
+
+      useEffect(() => {
+        if (sessions && sessions.length > 0) {
+          localStorage.setItem('ev_charging_sessions', JSON.stringify(sessions));
+        }
+      }, [sessions]);
+
+      const resetToSampleData = () => {
+        if (window.SAMPLE_CHARGING_SESSIONS && window.SAMPLE_CHARGING_SESSIONS.length > 0) {
+          setSessions(window.SAMPLE_CHARGING_SESSIONS);
+          localStorage.setItem('ev_charging_sessions', JSON.stringify(window.SAMPLE_CHARGING_SESSIONS));
+          setDateFilter({
+            preset: 'all',
+            startDate: '2026-05-18',
+            endDate: '2026-11-18'
+          });
+          showToast(`Reset to ${window.SAMPLE_CHARGING_SESSIONS.length} sample sessions`, 'success');
+        } else {
+          showToast('Sample data not yet loaded. Refresh the page.', 'error');
+        }
+      };
+
+      // Handle Save Session (Add or Edit)
+      const handleSaveSession = (sessionData) => {
+        setSessions(prev => {
+          const index = prev.findIndex(s => s.id === sessionData.id);
+          let updated;
+          if (index !== -1) {
+            // Edit existing
+            updated = [...prev];
+            updated[index] = sessionData;
+          } else {
+            // Add new at top
+            updated = [sessionData, ...prev];
+          }
+          localStorage.setItem('ev_charging_sessions', JSON.stringify(updated));
+          return updated;
+        });
+        setIsFormModalOpen(false);
+        setSessionToEdit(null);
+      };
+
+      // Handle Edit Trigger
+      const handleStartEdit = (session) => {
+        setSessionToEdit(session);
+        setIsFormModalOpen(true);
+      };
+
+      // Handle Delete Session
+      const handleDeleteSession = (id) => {
+        if (window.confirm && window.confirm(`Delete session ${id}? This cannot be undone.`)) {
+          setSessions(prev => {
+            const updated = prev.filter(s => s.id !== id);
+            localStorage.setItem('ev_charging_sessions', JSON.stringify(updated));
+            return updated;
+          });
+        }
+      };
+
+      // Open Add Modal
+      const handleOpenAdd = () => {
+        setSessionToEdit(null);
+        setIsFormModalOpen(true);
+      };
+
+      const formatDuration = (mins) => {
+        const h = Math.floor(mins / 60);
+        const m = mins % 60;
+        if (h === 0) return `${m}m`;
+        return `${h}h ${m}m`;
+      };
+
+      const navItems = [
+        { id: 'dashboard', label: 'Dashboard', icon: Icons.Dashboard },
+        { id: 'sessions', label: 'Sessions', icon: Icons.List, badge: sessions.length },
+        { id: 'add', label: 'Add Session', icon: Icons.PlusCircle },
+        { id: 'insights', label: 'Insights', icon: Icons.TrendingUp }
+      ];
+
+      if (!isReady) {
+        return (
+          <div className="flex h-screen items-center justify-center bg-slate-950">
+            <div className="text-center space-y-4">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-brand-600 to-electric-500 flex items-center justify-center mx-auto shadow-xl shadow-brand-500/40">
+                <svg className="w-8 h-8 text-white animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+              </div>
+              <p className="text-brand-400 font-semibold text-sm tracking-wide">Loading VoltTrack…</p>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="flex h-screen overflow-hidden">
+          {/* SIDEBAR */}
+          <aside className="hidden md:flex md:w-64 flex-col border-r border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md">
+            <div className="p-6 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-brand-600 to-electric-500 flex items-center justify-center text-white shadow-md shadow-brand-500/20">
+                  <Icons.Zap className="w-6 h-6" />
+                </div>
+                <div>
+                  <h1 className="font-bold text-lg tracking-tight bg-gradient-to-r from-slate-900 to-slate-700 dark:from-white dark:to-slate-300 bg-clip-text text-transparent">
+                    VoltTrack
+                  </h1>
+                  <span className="text-xs text-brand-600 dark:text-brand-400 font-semibold uppercase tracking-wider">EV Analytics</span>
+                </div>
+              </div>
+            </div>
+
+            <nav className="flex-1 p-4 space-y-1.5 overflow-y-auto">
+              <div className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase px-3 py-2">Menu</div>
+              {navItems.map((item) => {
+                const IconComponent = item.icon;
+                const isActive = activeTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => {
+                      if (item.id === 'add') {
+                        handleOpenAdd();
+                      } else {
+                        setActiveTab(item.id);
+                      }
+                    }}
+                    className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 ${
+                      isActive && item.id !== 'add'
+                        ? 'bg-brand-500 text-white shadow-sm shadow-brand-500/30'
+                        : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    <div className="flex items-center space-x-3">
+                      <IconComponent className={`w-5 h-5 ${isActive && item.id !== 'add' ? 'text-white' : 'text-slate-500 dark:text-slate-400'}`} />
+                      <span>{item.label}</span>
+                    </div>
+                    {item.badge !== undefined && (
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
+                        isActive && item.id !== 'add' ? 'bg-white/20 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+                      }`}>
+                        {item.badge}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </nav>
+
+            <div className="p-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
+              <div className="p-3 rounded-xl bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/50">
+                <div className="flex items-center space-x-2 text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
+                  <Icons.BatteryCharging className="w-4 h-4 text-brand-500" />
+                  <span>Configured Vehicle</span>
+                </div>
+                <div className="text-sm font-semibold text-slate-800 dark:text-slate-200">Tesla Model 3 / 75 kWh</div>
+                <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Total sessions: {sessions.length}</div>
+              </div>
+
+              <button
+                onClick={resetToSampleData}
+                title="Reload the 150 verified sample sessions"
+                className="w-full flex items-center justify-center space-x-2 text-xs py-2 px-3 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 transition"
+              >
+                <Icons.RefreshCw className="w-3.5 h-3.5" />
+                <span>Reload 150 Sample Sessions</span>
+              </button>
+            </div>
+          </aside>
+
+          {/* MAIN CONTAINER */}
+          <div className="flex-1 flex flex-col h-screen overflow-hidden">
+            <header className="h-16 border-b border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/70 backdrop-blur-md flex items-center justify-between px-4 sm:px-8 z-10">
+              <div className="flex items-center space-x-3">
+                <button
+                  onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+                  className="md:hidden p-2 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+                >
+                  <Icons.Menu className="w-6 h-6" />
+                </button>
+                <div className="flex items-center space-x-2">
+                  <span className="text-sm font-semibold capitalize text-slate-500 dark:text-slate-400">View /</span>
+                  <span className="text-sm font-bold text-slate-800 dark:text-white capitalize">{activeTab}</span>
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-3 sm:space-x-4">
+                <span className="hidden sm:inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800/50">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                  {sessions.length} Stored Logs
+                </span>
+
+                <button
+                  onClick={toggleTheme}
+                  aria-label="Toggle Dark / Light Theme"
+                  className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:text-brand-500 dark:hover:text-brand-400 hover:border-brand-500/30 transition shadow-sm"
+                >
+                  {theme === 'dark' ? <Icons.Sun className="w-5 h-5 text-amber-400" /> : <Icons.Moon className="w-5 h-5 text-indigo-600" />}
+                </button>
+
+                <button
+                  onClick={handleOpenAdd}
+                  className="hidden sm:flex items-center space-x-2 bg-brand-500 hover:bg-brand-600 text-white px-3.5 py-2 rounded-xl text-sm font-medium shadow-sm shadow-brand-500/30 transition"
+                >
+                  <Icons.PlusCircle className="w-4 h-4" />
+                  <span>Log Charge</span>
+                </button>
+              </div>
+            </header>
+
+            {isMobileMenuOpen && (
+              <div className="md:hidden border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-2">
+                {navItems.map(item => {
+                  const IconComponent = item.icon;
+                  const isActive = activeTab === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => {
+                        if (item.id === 'add') {
+                          handleOpenAdd();
+                        } else {
+                          setActiveTab(item.id);
+                        }
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`w-full flex items-center justify-between p-2.5 rounded-lg text-sm font-medium ${
+                        isActive && item.id !== 'add' ? 'bg-brand-500 text-white' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      <div className="flex items-center space-x-3">
+                        <IconComponent className="w-5 h-5" />
+                        <span>{item.label}</span>
+                      </div>
+                      {item.badge !== undefined && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700">
+                          {item.badge}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            <main className="flex-1 overflow-y-auto p-4 pb-24 sm:pb-8 sm:p-8 bg-slate-50/50 dark:bg-slate-950">
+              <div className="max-w-7xl mx-auto space-y-8">
+                {activeTab === 'dashboard' && (
+                  <ErrorBoundary><DashboardView
+                    sessions={sessions}
+                    formatDuration={formatDuration}
+                    onNavigate={setActiveTab}
+                    dateFilter={dateFilter}
+                    setDateFilter={setDateFilter}
+                    theme={theme}
+                  /></ErrorBoundary>
+                )}
+                {activeTab === 'sessions' && (
+                  <ErrorBoundary><SessionsView
+                    sessions={sessions}
+                    formatDuration={formatDuration}
+                    onDelete={handleDeleteSession}
+                    onEdit={handleStartEdit}
+                    onOpenAdd={handleOpenAdd}
+                    onUpdateSessions={setSessions}
+                  /></ErrorBoundary>
+                )}
+                {activeTab === 'insights' && (
+                  <ErrorBoundary><InsightsView sessions={sessions} /></ErrorBoundary>
+                )}
+              </div>
+            </main>
+          </div>
+
+          {/* BOTTOM TAB BAR (mobile) */}
+          <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 border-t border-slate-200 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md flex items-center justify-around px-2 pb-safe" style={{paddingBottom:'env(safe-area-inset-bottom)'}}>
+            {navItems.map(item => {
+              const IC = item.icon;
+              const isActive = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => { if (item.id === 'add') { handleOpenAdd(); } else { setActiveTab(item.id); setIsMobileMenuOpen(false); } }}
+                  className={`flex flex-col items-center justify-center gap-0.5 py-2 px-3 rounded-xl transition ${isActive && item.id !== 'add' ? 'text-brand-500' : 'text-slate-500 dark:text-slate-400'}`}
+                  style={{minWidth:60}}
+                >
+                  <IC className="w-5 h-5" />
+                  <span className="text-[10px] font-semibold">{item.label}</span>
+                </button>
+              );
+            })}
+          </nav>
+
+          {/* --- ADD / EDIT SESSION MODAL --- */}
+          {isFormModalOpen && (
+            <AddEditSessionModal
+              session={sessionToEdit}
+              onSave={handleSaveSession}
+              onClose={() => {
+                setIsFormModalOpen(false);
+                setSessionToEdit(null);
+              }}
+            />
+          )}
+        </div>
+      );
+    }
+
+    // --- DASHBOARD VIEW COMPONENT (5 Recharts Visualizations) ---
+    function DashboardView({ sessions, formatDuration, onNavigate, dateFilter, setDateFilter, theme }) {
+      const { minDate, maxDate } = useMemo(() => {
+        if (!sessions || sessions.length === 0) return { minDate: '2026-05-18', maxDate: '2026-11-18' };
+        let minD = sessions[0].date;
+        let maxD = sessions[0].date;
+        sessions.forEach(s => {
+          if (s.date < minD) minD = s.date;
+          if (s.date > maxD) maxD = s.date;
+        });
+        return { minDate: minD, maxDate: maxD };
+      }, [sessions]);
+
+      const handlePresetChange = (presetKey) => {
+        if (presetKey === 'all') {
+          setDateFilter({ preset: 'all', startDate: minDate, endDate: maxDate });
+        } else if (presetKey === '30d') {
+          const end = new Date(maxDate + 'T00:00:00');
+          const start = new Date(end);
+          start.setDate(start.getDate() - 30);
+          setDateFilter({ preset: '30d', startDate: start.toISOString().split('T')[0], endDate: maxDate });
+        } else if (presetKey === '3m') {
+          const end = new Date(maxDate + 'T00:00:00');
+          const start = new Date(end);
+          start.setMonth(start.getMonth() - 3);
+          setDateFilter({ preset: '3m', startDate: start.toISOString().split('T')[0], endDate: maxDate });
+        } else if (presetKey === '6m') {
+          const end = new Date(maxDate + 'T00:00:00');
+          const start = new Date(end);
+          start.setMonth(start.getMonth() - 6);
+          setDateFilter({ preset: '6m', startDate: start.toISOString().split('T')[0], endDate: maxDate });
+        } else if (presetKey === 'custom') {
+          setDateFilter(prev => ({ ...prev, preset: 'custom' }));
+        }
+      };
+
+      const filteredSessions = useMemo(() => {
+        if (!sessions || sessions.length === 0) return [];
+        return sessions.filter(s => {
+          if (!s.date) return false;
+          if (dateFilter.startDate && s.date < dateFilter.startDate) return false;
+          if (dateFilter.endDate && s.date > dateFilter.endDate) return false;
+          return true;
+        });
+      }, [sessions, dateFilter]);
+
+      const metrics = useMemo(() => {
+        if (!filteredSessions || filteredSessions.length === 0) {
+          return {
+            totalEnergy: 0,
+            totalCost: 0,
+            count: 0,
+            avgCostPerKwh: 0,
+            avgDurationMinutes: 0,
+            efficiencyKmPerKwh: 0,
+            totalDistanceKm: 0,
+            chargerBreakdown: { home: 0, public: 0, dcfc: 0 }
+          };
+        }
+
+        let totalEnergy = 0;
+        let totalCost = 0;
+        let totalDuration = 0;
+        let minOdo = Infinity;
+        let maxOdo = -Infinity;
+        let homeCount = 0;
+        let publicCount = 0;
+        let dcfcCount = 0;
+
+        filteredSessions.forEach(s => {
+          totalEnergy += (Number(s.energyAddedKwh) || 0);
+          totalCost += (Number(s.totalCost) || 0);
+          totalDuration += (Number(s.durationMinutes) || 0);
+          
+          if (s.odometerKm) {
+            const odo = Number(s.odometerKm);
+            if (odo < minOdo) minOdo = odo;
+            if (odo > maxOdo) maxOdo = odo;
+          }
+
+          if (s.chargerType === 'Home AC') homeCount++;
+          else if (s.chargerType === 'DC Fast') dcfcCount++;
+          else publicCount++;
+        });
+
+        const count = filteredSessions.length;
+        const avgCostPerKwh = totalEnergy > 0 ? (totalCost / totalEnergy) : 0;
+        const avgDurationMinutes = count > 0 ? (totalDuration / count) : 0;
+        const totalDistanceKm = (maxOdo > minOdo && minOdo !== Infinity) ? (maxOdo - minOdo) : 0;
+        const efficiencyKmPerKwh = (totalDistanceKm > 0 && totalEnergy > 0) ? (totalDistanceKm / totalEnergy) : 0;
+
+        return {
+          totalEnergy: Math.round(totalEnergy * 10) / 10,
+          totalCost: Math.round(totalCost * 100) / 100,
+          count,
+          avgCostPerKwh: Math.round(avgCostPerKwh * 1000) / 1000,
+          avgDurationMinutes: Math.round(avgDurationMinutes),
+          totalDistanceKm,
+          efficiencyKmPerKwh: Math.round(efficiencyKmPerKwh * 100) / 100,
+          chargerBreakdown: { home: homeCount, public: publicCount, dcfc: dcfcCount }
+        };
+      }, [filteredSessions]);
+
+      // 1. Monthly Energy & Cost Data
+      const monthlyData = useMemo(() => {
+        if (!filteredSessions || filteredSessions.length === 0) return [];
+        const monthMap = {};
+
+        filteredSessions.forEach(s => {
+          if (!s.date) return;
+          const key = s.date.slice(0, 7);
+          if (!monthMap[key]) {
+            const [year, month] = key.split('-');
+            const dateObj = new Date(Number(year), Number(month) - 1, 1);
+            const formattedMonth = dateObj.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+            monthMap[key] = {
+              rawKey: key,
+              month: formattedMonth,
+              totalEnergy: 0,
+              sessionCount: 0,
+              totalCost: 0
+            };
+          }
+          monthMap[key].totalEnergy += (Number(s.energyAddedKwh) || 0);
+          monthMap[key].totalCost += (Number(s.totalCost) || 0);
+          monthMap[key].sessionCount += 1;
+        });
+
+        return Object.values(monthMap)
+          .sort((a, b) => a.rawKey.localeCompare(b.rawKey))
+          .map(item => ({
+            ...item,
+            totalEnergy: Math.round(item.totalEnergy * 10) / 10,
+            totalCost: Math.round(item.totalCost * 100) / 100
+          }));
+      }, [filteredSessions]);
+
+      // 2. Energy by Charger Type (Donut)
+      const chargerTypeData = useMemo(() => {
+        const types = {
+          'Home AC': { name: 'Home AC', energy: 0, count: 0, color: '#10b981' },
+          'Public AC': { name: 'Public AC', energy: 0, count: 0, color: '#0ea5e9' },
+          'DC Fast': { name: 'DC Fast', energy: 0, count: 0, color: '#f59e0b' }
+        };
+        filteredSessions.forEach(s => {
+          const t = s.chargerType || 'Public AC';
+          if (!types[t]) types[t] = { name: t, energy: 0, count: 0, color: '#8b5cf6' };
+          types[t].energy += (Number(s.energyAddedKwh) || 0);
+          types[t].count += 1;
+        });
+        const total = Object.values(types).reduce((acc, v) => acc + v.energy, 0);
+        return Object.values(types)
+          .filter(v => v.energy > 0)
+          .map(v => ({
+            ...v,
+            energy: Math.round(v.energy * 10) / 10,
+            percentage: total > 0 ? (v.energy / total) * 100 : 0
+          }));
+      }, [filteredSessions]);
+
+      // 3. Charging Activity by Hour (24H Bar)
+      const hourlyActivity = useMemo(() => {
+        const formatHour = (h) => {
+          if (h === 0) return '12 AM';
+          if (h === 12) return '12 PM';
+          return h > 12 ? `${h - 12} PM` : `${h} AM`;
+        };
+
+        const hours = Array.from({ length: 24 }, (_, i) => ({
+          hour: i,
+          hourLabel: formatHour(i),
+          hourRange: `${formatHour(i)} - ${formatHour((i + 1) % 24)}`,
+          sessions: 0,
+          totalEnergy: 0
+        }));
+
+        filteredSessions.forEach(s => {
+          if (s.startTime) {
+            const h = parseInt(s.startTime.split(':')[0], 10);
+            if (!isNaN(h) && h >= 0 && h < 24) {
+              hours[h].sessions += 1;
+              hours[h].totalEnergy += (Number(s.energyAddedKwh) || 0);
+            }
+          }
+        });
+
+        let maxSessions = 0;
+        let peakHour = 22;
+        hours.forEach(h => {
+          h.totalEnergy = Math.round(h.totalEnergy * 10) / 10;
+          if (h.sessions > maxSessions) {
+            maxSessions = h.sessions;
+            peakHour = h.hour;
+          }
+        });
+
+        return {
+          hours: hours.map(h => ({
+            ...h,
+            isPeak: h.hour === peakHour && h.sessions > 0
+          })),
+          peakHourLabel: formatHour(peakHour),
+          peakSessions: maxSessions
+        };
+      }, [filteredSessions]);
+
+      // 4. Efficiency Over Time (Consecutive Odometer / kWh)
+      const { efficiencyTrendData, overallAverageEfficiency } = useMemo(() => {
+        if (!sessions || sessions.length < 2) {
+          return { efficiencyTrendData: [], overallAverageEfficiency: 0 };
+        }
+
+        const sorted = [...sessions].sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime));
+        const monthlyGroups = {};
+        let totalPeriodDeltaKm = 0;
+        let totalPeriodEnergy = 0;
+
+        for (let i = 1; i < sorted.length; i++) {
+          const prev = sorted[i - 1];
+          const curr = sorted[i];
+
+          if (dateFilter.startDate && curr.date < dateFilter.startDate) continue;
+          if (dateFilter.endDate && curr.date > dateFilter.endDate) continue;
+
+          const deltaKm = (Number(curr.odometerKm) || 0) - (Number(prev.odometerKm) || 0);
+          const energy = Number(curr.energyAddedKwh) || 0;
+
+          if (deltaKm > 0 && energy > 0 && deltaKm < 2000) {
+            const monthKey = curr.date.slice(0, 7);
+            if (!monthlyGroups[monthKey]) {
+              const [year, month] = monthKey.split('-');
+              const dateObj = new Date(Number(year), Number(month) - 1, 1);
+              monthlyGroups[monthKey] = {
+                rawKey: monthKey,
+                month: dateObj.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
+                totalDeltaKm: 0,
+                totalEnergy: 0
+              };
+            }
+            monthlyGroups[monthKey].totalDeltaKm += deltaKm;
+            monthlyGroups[monthKey].totalEnergy += energy;
+
+            totalPeriodDeltaKm += deltaKm;
+            totalPeriodEnergy += energy;
+          }
+        }
+
+        const overallAvg = totalPeriodEnergy > 0 ? (totalPeriodDeltaKm / totalPeriodEnergy) : 0;
+
+        const trend = Object.values(monthlyGroups)
+          .sort((a, b) => a.rawKey.localeCompare(b.rawKey))
+          .map(g => {
+            const eff = g.totalEnergy > 0 ? (g.totalDeltaKm / g.totalEnergy) : 0;
+            return {
+              rawKey: g.rawKey,
+              month: g.month,
+              efficiency: Math.round(eff * 100) / 100,
+              totalDeltaKm: Math.round(g.totalDeltaKm),
+              totalEnergy: Math.round(g.totalEnergy * 10) / 10
+            };
+          });
+
+        return {
+          efficiencyTrendData: trend,
+          overallAverageEfficiency: Math.round(overallAvg * 100) / 100
+        };
+      }, [sessions, dateFilter]);
+
+      // Tooltip Components
+      const EnergyBarTooltip = ({ active, payload }) => {
+        if (active && payload && payload.length) {
+          const item = payload[0].payload;
+          return (
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-3 rounded-xl shadow-xl text-xs space-y-1 min-w-[160px]">
+              <div className="font-bold text-slate-900 dark:text-white pb-1 border-b border-slate-100 dark:border-slate-800 flex justify-between">
+                <span>{item.month}</span>
+                <span className="font-mono text-emerald-500 font-semibold">{item.sessionCount} sessions</span>
+              </div>
+              <div className="flex justify-between pt-1 text-slate-600 dark:text-slate-300">
+                <span>Total Energy:</span>
+                <span className="font-bold font-mono text-emerald-500">{item.totalEnergy.toFixed(1)} kWh</span>
+              </div>
+            </div>
+          );
+        }
+        return null;
+      };
+
+      const CostLineTooltip = ({ active, payload }) => {
+        if (active && payload && payload.length) {
+          const item = payload[0].payload;
+          return (
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-3 rounded-xl shadow-xl text-xs space-y-1 min-w-[160px]">
+              <div className="font-bold text-slate-900 dark:text-white pb-1 border-b border-slate-100 dark:border-slate-800 flex justify-between">
+                <span>{item.month}</span>
+                <span className="text-sky-500 font-mono font-semibold">Cost</span>
+              </div>
+              <div className="flex justify-between pt-1 text-slate-600 dark:text-slate-300">
+                <span>Total Cost:</span>
+                <span className="font-bold font-mono text-sky-500">{formatRupee(item.totalCost)}</span>
+              </div>
+            </div>
+          );
+        }
+        return null;
+      };
+
+      const DonutTooltip = ({ active, payload }) => {
+        if (active && payload && payload.length) {
+          const item = payload[0].payload;
+          return (
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-3 rounded-xl shadow-xl text-xs space-y-1 min-w-[160px]">
+              <div className="font-bold text-slate-900 dark:text-white pb-1 border-b border-slate-100 dark:border-slate-800 flex justify-between">
+                <span>{item.name}</span>
+                <span className="font-mono text-slate-400">{item.count} charges</span>
+              </div>
+              <div className="flex justify-between pt-1 text-slate-600 dark:text-slate-300">
+                <span>Total Energy:</span>
+                <span className="font-bold font-mono text-emerald-500">{item.energy.toFixed(1)} kWh</span>
+              </div>
+              <div className="flex justify-between text-slate-500 dark:text-slate-400">
+                <span>Share:</span>
+                <span className="font-bold font-mono text-slate-800 dark:text-slate-200">{item.percentage.toFixed(1)}%</span>
+              </div>
+            </div>
+          );
+        }
+        return null;
+      };
+
+      const HourlyTooltip = ({ active, payload }) => {
+        if (active && payload && payload.length) {
+          const item = payload[0].payload;
+          return (
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-3 rounded-xl shadow-xl text-xs space-y-1 min-w-[170px]">
+              <div className="font-bold text-slate-900 dark:text-white pb-1 border-b border-slate-100 dark:border-slate-800 flex justify-between">
+                <span>{item.hourRange}</span>
+                {item.isPeak && <span className="text-[10px] bg-purple-500 text-white px-1.5 py-0.5 rounded font-bold">PEAK</span>}
+              </div>
+              <div className="flex justify-between pt-1 text-slate-600 dark:text-slate-300">
+                <span>Sessions:</span>
+                <span className="font-bold font-mono text-slate-900 dark:text-white">{item.sessions}</span>
+              </div>
+              <div className="flex justify-between text-slate-500 dark:text-slate-400">
+                <span>Energy:</span>
+                <span className="font-bold font-mono text-emerald-500">{item.totalEnergy.toFixed(1)} kWh</span>
+              </div>
+            </div>
+          );
+        }
+        return null;
+      };
+
+      const EfficiencyTooltip = ({ active, payload }) => {
+        if (active && payload && payload.length) {
+          const item = payload[0].payload;
+          return (
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-3 rounded-xl shadow-xl text-xs space-y-1 min-w-[180px]">
+              <div className="font-bold text-slate-900 dark:text-white pb-1 border-b border-slate-100 dark:border-slate-800 flex justify-between">
+                <span>{item.month}</span>
+                <span className="text-purple-500 font-mono font-semibold">{item.efficiency.toFixed(2)} km/kWh</span>
+              </div>
+              <div className="flex justify-between pt-1 text-slate-500 dark:text-slate-400">
+                <span>Distance Logged:</span>
+                <span className="font-mono text-slate-800 dark:text-slate-200">{item.totalDeltaKm.toLocaleString()} km</span>
+              </div>
+              <div className="flex justify-between text-slate-500 dark:text-slate-400">
+                <span>Energy Added:</span>
+                <span className="font-mono text-slate-800 dark:text-slate-200">{item.totalEnergy} kWh</span>
+              </div>
+            </div>
+          );
+        }
+        return null;
+      };
+
+      const presetButtons = [
+        { key: 'all', label: 'All time' },
+        { key: '30d', label: 'Last 30 days' },
+        { key: '3m', label: 'Last 3 months' },
+        { key: '6m', label: 'Last 6 months' },
+        { key: 'custom', label: 'Custom' }
+      ];
+
+      if (!sessions || sessions.length === 0) {
+        return (
+          <EmptyState
+            icon="🔋"
+            title="No charging sessions yet"
+            message="Your dashboard will light up once you log a session or reload the sample data."
+          />
+        );
+      }
+
+      return (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-slate-900 dark:text-white">
+                Charging Overview & Energy Stats
+              </h2>
+              <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+                Aggregated metrics over {metrics.count} sessions ({dateFilter.startDate} to {dateFilter.endDate}).
+              </p>
+            </div>
+            
+            <div className="flex items-center space-x-2 text-xs font-semibold">
+              <div className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300">
+                <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                <span>Home: {metrics.chargerBreakdown.home}</span>
+              </div>
+              <div className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300">
+                <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                <span>DC Fast: {metrics.chargerBreakdown.dcfc}</span>
+              </div>
+              <div className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-sky-50 dark:bg-sky-950/50 border border-sky-200 dark:border-sky-800 text-sky-700 dark:text-sky-300">
+                <span className="w-2 h-2 rounded-full bg-sky-500"></span>
+                <span>Public: {metrics.chargerBreakdown.public}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* GLOBAL DATE FILTER */}
+          <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-3">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div className="flex items-center space-x-2">
+                <div className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
+                  <Icons.Calendar className="w-4 h-4 text-brand-500" />
+                </div>
+                <div>
+                  <span className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    Date Range Filter
+                  </span>
+                  <div className="text-xs text-slate-700 dark:text-slate-300 font-medium">
+                    Showing {metrics.count} sessions ({dateFilter.startDate} → {dateFilter.endDate})
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5">
+                {presetButtons.map(p => (
+                  <button
+                    key={p.key}
+                    onClick={() => handlePresetChange(p.key)}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-xl transition ${
+                      dateFilter.preset === p.key
+                        ? 'bg-brand-500 text-white shadow-sm shadow-brand-500/30'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {dateFilter.preset === 'custom' && (
+              <div className="pt-3 border-t border-slate-100 dark:border-slate-800/80 flex flex-wrap items-center gap-3">
+                <div className="flex items-center space-x-2 text-xs font-medium text-slate-600 dark:text-slate-400">
+                  <span>Start Date:</span>
+                  <input
+                    type="date"
+                    value={dateFilter.startDate}
+                    max={dateFilter.endDate}
+                    onChange={e => setDateFilter(prev => ({ ...prev, startDate: e.target.value }))}
+                    className="px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white text-xs focus:ring-2 focus:ring-brand-500"
+                  />
+                </div>
+                <div className="flex items-center space-x-2 text-xs font-medium text-slate-600 dark:text-slate-400">
+                  <span>End Date:</span>
+                  <input
+                    type="date"
+                    value={dateFilter.endDate}
+                    min={dateFilter.startDate}
+                    onChange={e => setDateFilter(prev => ({ ...prev, endDate: e.target.value }))}
+                    className="px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white text-xs focus:ring-2 focus:ring-brand-500"
+                  />
+                </div>
+                <button
+                  onClick={() => handlePresetChange('all')}
+                  className="text-xs text-brand-600 dark:text-brand-400 font-semibold hover:underline ml-auto"
+                >
+                  Reset to All Time
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* 6 SUMMARY CARDS */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+            <SummaryCard
+              title="Total Energy Delivered"
+              value={`${metrics.totalEnergy.toLocaleString()} kWh`}
+              subtext="Cumulative power drawn"
+              icon={Icons.Zap}
+              accentColor="brand"
+              badge={`${Math.round((metrics.totalEnergy / 75) * 10) / 10} packs`}
+            />
+
+            <SummaryCard
+              title="Total Charging Cost"
+              value={formatRupee(metrics.totalCost)}
+              subtext="Across selected range"
+              icon={Icons.Dollar}
+              accentColor="emerald"
+              badge={dateFilter.preset.toUpperCase()}
+            />
+
+            <SummaryCard
+              title="Charging Sessions"
+              value={metrics.count}
+              subtext="Filtered logs count"
+              icon={Icons.List}
+              accentColor="cyan"
+              badge={`${Math.round((metrics.chargerBreakdown.home / (metrics.count || 1)) * 100)}% Home`}
+            />
+
+            <SummaryCard
+              title="Avg Cost per kWh"
+              value={formatRupee(metrics.avgCostPerKwh)}
+              subtext="Weighted unit cost"
+              icon={Icons.TrendingUp}
+              accentColor="indigo"
+              badge="Per kWh"
+            />
+
+            <SummaryCard
+              title="Avg Session Duration"
+              value={formatDuration(metrics.avgDurationMinutes)}
+              subtext={`~${metrics.avgDurationMinutes} mins / charge`}
+              icon={Icons.Clock}
+              accentColor="amber"
+              badge="Overnight + DCFC"
+            />
+
+            <SummaryCard
+              title="Driving Efficiency"
+              value={`${metrics.efficiencyKmPerKwh} km / kWh`}
+              subtext={`${metrics.totalDistanceKm.toLocaleString()} km distance`}
+              icon={Icons.Gauge}
+              accentColor="purple"
+              badge={`${metrics.efficiencyKmPerKwh > 0 ? (100 / metrics.efficiencyKmPerKwh).toFixed(1) : 0} kWh/100km`}
+            />
+          </div>
+
+          {/* CHART ROW 1: MONTHLY ENERGY & MONTHLY CHARGING COST */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800/80 pb-3">
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                    Monthly Energy Consumption
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                    Kilowatt-hours delivered grouped by month
+                  </p>
+                </div>
+                <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 font-mono">
+                  {monthlyData.reduce((acc, d) => acc + d.totalEnergy, 0).toFixed(1)} kWh Total
+                </span>
+              </div>
+
+              <div className="w-full h-72">
+                {monthlyData.length === 0 ? (
+                  <div className="w-full h-full flex items-center justify-center text-xs text-slate-400">
+                    No charging data in this range.
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={monthlyData} margin={{ top: 10, right: 15, left: 10, bottom: 10 }}>
+                      <defs>
+                        <linearGradient id="energyGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#10b981" stopOpacity={0.95} />
+                          <stop offset="100%" stopColor="#059669" stopOpacity={0.75} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={theme === 'dark' ? '#1e293b' : '#f1f5f9'} />
+                      <XAxis dataKey="month" stroke={theme === 'dark' ? '#64748b' : '#94a3b8'} tick={{ fontSize: 11 }} tickLine={false} />
+                      <YAxis
+                        stroke={theme === 'dark' ? '#64748b' : '#94a3b8'}
+                        tick={{ fontSize: 11 }}
+                        tickLine={false}
+                        label={{ value: 'Energy (kWh)', angle: -90, position: 'insideLeft', offset: 5, fill: theme === 'dark' ? '#94a3b8' : '#64748b', fontSize: 11, fontWeight: 600 }}
+                      />
+                      <Tooltip content={<EnergyBarTooltip />} />
+                      <Bar dataKey="totalEnergy" fill="url(#energyGrad)" radius={[5, 5, 0, 0]} maxBarSize={48} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </div>
+
+            <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800/80 pb-3">
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-sky-500"></span>
+                    Monthly Charging Cost
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                    Expenditure trend across utility and fast chargers
+                  </p>
+                </div>
+                <span className="text-xs font-semibold text-sky-600 dark:text-sky-400 font-mono">
+                  {formatRupee(monthlyData.reduce((acc, d) => acc + d.totalCost, 0))} Total
+                </span>
+              </div>
+
+              <div className="w-full h-72">
+                {monthlyData.length === 0 ? (
+                  <div className="w-full h-full flex items-center justify-center text-xs text-slate-400">
+                    No charging data in this range.
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={monthlyData} margin={{ top: 10, right: 15, left: 15, bottom: 10 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={theme === 'dark' ? '#1e293b' : '#f1f5f9'} />
+                      <XAxis dataKey="month" stroke={theme === 'dark' ? '#64748b' : '#94a3b8'} tick={{ fontSize: 11 }} tickLine={false} />
+                      <YAxis
+                        stroke={theme === 'dark' ? '#64748b' : '#94a3b8'}
+                        tick={{ fontSize: 11 }}
+                        tickLine={false}
+                        tickFormatter={(v) => `₹${v}`}
+                        label={{ value: 'Cost (₹)', angle: -90, position: 'insideLeft', offset: 0, fill: theme === 'dark' ? '#94a3b8' : '#64748b', fontSize: 11, fontWeight: 600 }}
+                      />
+                      <Tooltip content={<CostLineTooltip />} />
+                      <Line
+                        type="monotone"
+                        dataKey="totalCost"
+                        stroke="#0ea5e9"
+                        strokeWidth={2.5}
+                        dot={{ r: 4.5, fill: '#0ea5e9', stroke: '#fff', strokeWidth: 2 }}
+                        activeDot={{ r: 6.5, fill: '#38bdf8' }}
+                        name="Cost (₹)"
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* CHART ROW 2: DONUT & HOURLY ACTIVITY */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800/80 pb-3">
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
+                    Energy by Charger Type
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                    Total kWh distribution with percentage share
+                  </p>
+                </div>
+              </div>
+
+              <div className="w-full h-72">
+                {chargerTypeData.length === 0 ? (
+                  <div className="w-full h-full flex items-center justify-center text-xs text-slate-400">
+                    No charging data in this range.
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Tooltip content={<DonutTooltip />} />
+                      <Legend verticalAlign="bottom" height={36} formatter={(value) => <span className="text-xs font-medium text-slate-700 dark:text-slate-300">{value}</span>} />
+                      <Pie
+                        data={chargerTypeData}
+                        dataKey="energy"
+                        nameKey="name"
+                        cx="50%"
+                        cy="45%"
+                        innerRadius={55}
+                        outerRadius={90}
+                        paddingAngle={4}
+                        label={({ name, percentage }) => `${percentage.toFixed(0)}%`}
+                        labelLine={false}
+                      >
+                        {chargerTypeData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.color} stroke={theme === 'dark' ? '#0f172a' : '#ffffff'} strokeWidth={2} />
+                        ))}
+                      </Pie>
+                    </PieChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </div>
+
+            <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800/80 pb-3">
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-purple-500"></span>
+                      Charging Activity by Hour
+                    </h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                      Session start distribution across 24-hour cycles
+                    </p>
+                  </div>
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-950/80 text-purple-700 dark:text-purple-300 border border-purple-300 dark:border-purple-800">
+                    Peak: {hourlyActivity.peakHourLabel}
+                  </span>
+                </div>
+
+                <div className="w-full h-64 pt-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={hourlyActivity.hours} margin={{ top: 10, right: 10, left: -15, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={theme === 'dark' ? '#1e293b' : '#f1f5f9'} />
+                      <XAxis dataKey="hourLabel" stroke={theme === 'dark' ? '#64748b' : '#94a3b8'} interval={3} tick={{ fontSize: 10 }} tickLine={false} />
+                      <YAxis stroke={theme === 'dark' ? '#64748b' : '#94a3b8'} tick={{ fontSize: 10 }} tickLine={false} label={{ value: 'Sessions', angle: -90, position: 'insideLeft', offset: 15, fill: theme === 'dark' ? '#94a3b8' : '#64748b', fontSize: 11, fontWeight: 600 }} />
+                      <Tooltip content={<HourlyTooltip />} />
+                      <Bar dataKey="sessions" radius={[4, 4, 0, 0]} maxBarSize={28}>
+                        {hourlyActivity.hours.map((entry, index) => (
+                          <Cell key={`hour-cell-${index}`} fill={entry.isPeak ? '#8b5cf6' : (theme === 'dark' ? '#334155' : '#cbd5e1')} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div className="text-xs text-slate-600 dark:text-slate-400 font-medium pt-2 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between">
+                <span>Peak charging time: <strong className="text-purple-600 dark:text-purple-400 font-bold">{hourlyActivity.peakHourLabel}</strong></span>
+                <span className="text-slate-400 text-[11px]">{hourlyActivity.peakSessions} sessions launched</span>
+              </div>
+            </div>
+          </div>
+
+          {/* CHART ROW 3: EFFICIENCY OVER TIME */}
+          <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800/80 pb-3">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>
+                  Efficiency Over Time
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  Consecutive session odometer delta divided by energy added (km/kWh)
+                </p>
+              </div>
+              <div className="flex items-center space-x-3 text-xs">
+                <span className="flex items-center gap-1.5 text-purple-600 dark:text-purple-400 font-medium">
+                  <span className="w-2.5 h-2.5 rounded-full bg-purple-500"></span>
+                  Monthly Efficiency
+                </span>
+                <span className="flex items-center gap-1.5 text-rose-500 font-medium">
+                  <span className="w-3 border-t-2 border-dashed border-rose-500"></span>
+                  Period Average ({overallAverageEfficiency} km/kWh)
+                </span>
+              </div>
+            </div>
+
+            <div className="w-full h-72">
+              {efficiencyTrendData.length === 0 ? (
+                <div className="w-full h-full flex items-center justify-center text-xs text-slate-400">
+                  Insufficient odometer tracking data in this range.
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={efficiencyTrendData} margin={{ top: 15, right: 35, left: 10, bottom: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={theme === 'dark' ? '#1e293b' : '#f1f5f9'} />
+                    <XAxis dataKey="month" stroke={theme === 'dark' ? '#64748b' : '#94a3b8'} tick={{ fontSize: 11 }} tickLine={false} />
+                    <YAxis
+                      domain={['auto', 'auto']}
+                      stroke={theme === 'dark' ? '#64748b' : '#94a3b8'}
+                      tick={{ fontSize: 11 }}
+                      tickLine={false}
+                      label={{ value: 'Efficiency (km/kWh)', angle: -90, position: 'insideLeft', offset: 5, fill: theme === 'dark' ? '#94a3b8' : '#64748b', fontSize: 11, fontWeight: 600 }}
+                    />
+                    <Tooltip content={<EfficiencyTooltip />} />
+                    {overallAverageEfficiency > 0 && (
+                      <ReferenceLine
+                        y={overallAverageEfficiency}
+                        stroke="#f43f5e"
+                        strokeDasharray="4 4"
+                        strokeWidth={2}
+                        label={{ value: `Avg ${overallAverageEfficiency}`, position: 'right', fill: '#f43f5e', fontSize: 11, fontWeight: 600 }}
+                      />
+                    )}
+                    <Line
+                      type="monotone"
+                      dataKey="efficiency"
+                      stroke="#8b5cf6"
+                      strokeWidth={2.5}
+                      dot={{ r: 4.5, fill: '#8b5cf6', stroke: '#fff', strokeWidth: 2 }}
+                      activeDot={{ r: 6.5, fill: '#a855f7' }}
+                      name="Efficiency (km/kWh)"
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // --- REUSABLE SUMMARY CARD ---
+    function SummaryCard({ title, value, subtext, icon: IconComponent, accentColor, badge }) {
+      const colorGradients = {
+        brand: 'from-emerald-500/10 to-teal-500/5 text-emerald-600 dark:text-emerald-400 border-emerald-500/20',
+        emerald: 'from-emerald-500/10 to-green-500/5 text-emerald-600 dark:text-emerald-400 border-emerald-500/20',
+        cyan: 'from-cyan-500/10 to-blue-500/5 text-cyan-600 dark:text-cyan-400 border-cyan-500/20',
+        indigo: 'from-indigo-500/10 to-purple-500/5 text-indigo-600 dark:text-indigo-400 border-indigo-500/20',
+        amber: 'from-amber-500/10 to-yellow-500/5 text-amber-600 dark:text-amber-400 border-amber-500/20',
+        purple: 'from-purple-500/10 to-pink-500/5 text-purple-600 dark:text-purple-400 border-purple-500/20'
+      };
+
+      return (
+        <div className="relative overflow-hidden p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800/80 shadow-sm hover:shadow-md transition-all duration-200 flex flex-col justify-between">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
+                {title}
+              </p>
+              <h3 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-slate-900 dark:text-white">
+                {value}
+              </h3>
+            </div>
+            <div className={`p-3 rounded-xl border bg-gradient-to-br ${colorGradients[accentColor] || colorGradients.brand}`}>
+              <IconComponent className="w-6 h-6" />
+            </div>
+          </div>
+
+          <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800/60 flex items-center justify-between text-xs">
+            <span className="text-slate-500 dark:text-slate-400">{subtext}</span>
+            {badge && (
+              <span className="font-semibold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+                {badge}
+              </span>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // --- SESSIONS TABLE VIEW (Sortable, Searchable, Filters, Edit/Delete, CSV Import/Export) ---
+    function SessionsView({ sessions, formatDuration, onDelete, onEdit, onOpenAdd, onUpdateSessions }) {
+      const [searchQuery, setSearchQuery] = useState('');
+      const [typeFilter, setTypeFilter] = useState('ALL');
+      const [startDateFilter, setStartDateFilter] = useState('');
+      const [endDateFilter, setEndDateFilter] = useState('');
+
+      // Sorting state
+      const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
+
+      // Pagination state
+      const [currentPage, setCurrentPage] = useState(1);
+      const pageSize = 15;
+
+      const fileInputRef = useRef(null);
+
+      // Handle sort column click
+      const handleSort = (key) => {
+        setSortConfig(prev => {
+          if (prev.key === key) {
+            return { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' };
+          }
+          return { key, direction: 'desc' };
+        });
+      };
+
+      // Filtered and Sorted Sessions
+      const processedSessions = useMemo(() => {
+        let result = sessions.filter(s => {
+          // Type filter
+          if (typeFilter !== 'ALL' && s.chargerType !== typeFilter) return false;
+          // Date range
+          if (startDateFilter && s.date < startDateFilter) return false;
+          if (endDateFilter && s.date > endDateFilter) return false;
+          // Search query
+          if (searchQuery.trim()) {
+            const q = searchQuery.toLowerCase();
+            const matchLoc = (s.locationName || '').toLowerCase().includes(q);
+            const matchId = (s.id || '').toLowerCase().includes(q);
+            const matchDate = (s.date || '').includes(q);
+            const matchType = (s.chargerType || '').toLowerCase().includes(q);
+            if (!matchLoc && !matchId && !matchDate && !matchType) return false;
+          }
+          return true;
+        });
+
+        // Sorting
+        result.sort((a, b) => {
+          let valA = a[sortConfig.key];
+          let valB = b[sortConfig.key];
+
+          // Handle numerical vs string
+          if (['energyAddedKwh', 'totalCost', 'durationMinutes', 'odometerKm', 'costPerKwh'].includes(sortConfig.key)) {
+            valA = Number(valA) || 0;
+            valB = Number(valB) || 0;
+          } else if (sortConfig.key === 'date') {
+            valA = (a.date || '') + (a.startTime || '');
+            valB = (b.date || '') + (b.startTime || '');
+          } else {
+            valA = (valA || '').toString().toLowerCase();
+            valB = (valB || '').toString().toLowerCase();
+          }
+
+          if (valA < valB) return sortConfig.direction === 'asc' ? -1 : 1;
+          if (valA > valB) return sortConfig.direction === 'asc' ? 1 : -1;
+          return 0;
+        });
+
+        return result;
+      }, [sessions, typeFilter, startDateFilter, endDateFilter, searchQuery, sortConfig]);
+
+      // Paginated slice
+      const totalPages = Math.ceil(processedSessions.length / pageSize) || 1;
+      const paginatedSessions = useMemo(() => {
+        const start = (currentPage - 1) * pageSize;
+        return processedSessions.slice(start, start + pageSize);
+      }, [processedSessions, currentPage, pageSize]);
+
+      // Reset to page 1 on filter/search change
+      useEffect(() => {
+        setCurrentPage(1);
+      }, [searchQuery, typeFilter, startDateFilter, endDateFilter]);
+
+      // --- CSV EXPORT ---
+      const handleExportCSV = () => {
+        if (!sessions || sessions.length === 0) {
+          showToast('No sessions to export.', 'info'); return;
+          return;
+        }
+        const headers = [
+          'id', 'date', 'startTime', 'durationMinutes', 'energyAddedKwh',
+          'startSoC', 'endSoC', 'chargerType', 'locationName',
+          'costPerKwh', 'totalCost', 'odometerKm'
+        ];
+        const rows = sessions.map(s => [
+          s.id,
+          s.date,
+          s.startTime || '00:00',
+          s.durationMinutes || 0,
+          s.energyAddedKwh || 0,
+          s.startSoC || 0,
+          s.endSoC || 0,
+          `"${(s.chargerType || '').replace(/"/g, '""')}"`,
+          `"${(s.locationName || '').replace(/"/g, '""')}"`,
+          s.costPerKwh || 0,
+          s.totalCost || 0,
+          s.odometerKm || ''
+        ].join(','));
+
+        const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows].join('\n');
+        const encodedUri = encodeURI(csvContent);
+        const link = document.createElement('a');
+        link.setAttribute('href', encodedUri);
+        link.setAttribute('download', `ev_charging_sessions_${new Date().toISOString().slice(0, 10)}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      };
+
+      // --- CSV IMPORT ---
+      const handleImportCSV = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            const text = event.target.result;
+            const lines = text.split(/\r?\n/).filter(line => line.trim() !== '');
+            if (lines.length < 2) {
+              showToast('Invalid CSV: missing headers or data rows.', 'error'); return;
+              return;
+            }
+
+            const headerLine = lines[0];
+            const headers = headerLine.split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+            const imported = [];
+
+            for (let i = 1; i < lines.length; i++) {
+              // Regex to parse comma separated values while respecting quotes
+              const row = lines[i].match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g) || lines[i].split(',');
+              if (row.length >= 8) {
+                const s = {};
+                headers.forEach((h, idx) => {
+                  let val = row[idx] ? row[idx].trim().replace(/^"|"$/g, '') : '';
+                  s[h] = val;
+                });
+
+                if (s.date && (s.energyAddedKwh || s.energyKwh)) {
+                  const energy = Number(s.energyAddedKwh || s.energyKwh) || 0;
+                  const rate = Number(s.costPerKwh) || 12;
+                  const cost = Number(s.totalCost || s.cost) || Math.round(energy * rate * 100) / 100;
+
+                  imported.push({
+                    id: s.id || `EV-CHG-${Date.now()}-${i}`,
+                    date: s.date,
+                    startTime: s.startTime || '12:00',
+                    durationMinutes: Number(s.durationMinutes) || 60,
+                    energyAddedKwh: energy,
+                    startSoC: Number(s.startSoC) || 20,
+                    endSoC: Number(s.endSoC) || 80,
+                    chargerType: s.chargerType || 'Home AC',
+                    locationName: s.locationName || 'Imported Station',
+                    costPerKwh: rate,
+                    totalCost: cost,
+                    odometerKm: s.odometerKm ? Number(s.odometerKm) : undefined
+                  });
+                }
+              }
+            }
+
+            if (imported.length > 0) {
+              onUpdateSessions(prev => {
+                const existingIds = new Set(prev.map(p => p.id));
+                const newItems = imported.filter(item => !existingIds.has(item.id));
+                const combined = [...newItems, ...prev];
+                localStorage.setItem('ev_charging_sessions', JSON.stringify(combined));
+                return combined;
+              });
+              showToast(`Imported ${imported.length} new sessions!`, 'success');
+            } else {
+              showToast('No valid sessions found in this CSV file.', 'error');
+            }
+          } catch (err) {
+            console.error('Import error:', err);
+            showToast('CSV parse failed: ' + err.message, 'error');
+          }
+        };
+        reader.readAsText(file);
+        e.target.value = '';
+      };
+
+      // Header helper with sort arrow
+      const renderSortableHeader = (label, fieldKey, alignRight = false) => {
+        const isSorted = sortConfig.key === fieldKey;
+        return (
+          <th
+            onClick={() => handleSort(fieldKey)}
+            className={`py-3.5 px-4 cursor-pointer select-none hover:text-brand-500 transition ${alignRight ? 'text-right' : ''}`}
+          >
+            <div className={`inline-flex items-center gap-1.5 ${alignRight ? 'justify-end' : ''}`}>
+              <span>{label}</span>
+              <span className={`text-[10px] ${isSorted ? 'text-brand-500' : 'text-slate-400'}`}>
+                {isSorted ? (sortConfig.direction === 'asc' ? '▲' : '▼') : '↕'}
+              </span>
+            </div>
+          </th>
+        );
+      };
+
+      return (
+        <div className="space-y-6">
+          {/* Header & Action Toolbar */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-2xl font-extrabold text-slate-900 dark:text-white">All Charging Logs</h2>
+              <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400">
+                Displaying {processedSessions.length} of {sessions.length} total recorded charging events.
+              </p>
+            </div>
+
+            {/* Actions: Export, Import, Log */}
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleImportCSV}
+                accept=".csv"
+                className="hidden"
+              />
+              <button
+                onClick={() => fileInputRef.current && fileInputRef.current.click()}
+                title="Import sessions from a CSV file"
+                className="flex items-center space-x-1.5 px-3 py-2 text-xs font-semibold rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition shadow-sm"
+              >
+                <Icons.Upload className="w-3.5 h-3.5 text-brand-500" />
+                <span>Import CSV</span>
+              </button>
+
+              <button
+                onClick={handleExportCSV}
+                title="Export all sessions to a CSV file"
+                className="flex items-center space-x-1.5 px-3 py-2 text-xs font-semibold rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition shadow-sm"
+              >
+                <Icons.Download className="w-3.5 h-3.5 text-brand-500" />
+                <span>Export CSV</span>
+              </button>
+
+              <button
+                onClick={onOpenAdd}
+                className="flex items-center space-x-1.5 bg-brand-500 hover:bg-brand-600 text-white px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold shadow-sm shadow-brand-500/30 transition"
+              >
+                <Icons.PlusCircle className="w-4 h-4" />
+                <span>Log New Session</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Search & Filter Controls */}
+          <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-3">
+            <div className="flex flex-col md:flex-row items-center justify-between gap-3">
+              {/* Search Box */}
+              <div className="relative w-full md:w-80">
+                <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                  <Icons.Search className="w-4 h-4" />
+                </span>
+                <input
+                  type="text"
+                  placeholder="Search station, ID, or date..."
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                />
+              </div>
+
+              {/* Charger Type Filter */}
+              <div className="flex items-center space-x-1.5 w-full md:w-auto overflow-x-auto">
+                {['ALL', 'Home AC', 'DC Fast', 'Public AC'].map(type => (
+                  <button
+                    key={type}
+                    onClick={() => setTypeFilter(type)}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-xl transition ${
+                      typeFilter === type
+                        ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-sm'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'
+                    }`}
+                  >
+                    {type}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Date Range Pickers */}
+            <div className="pt-2 border-t border-slate-100 dark:border-slate-800/80 flex flex-wrap items-center gap-3 text-xs">
+              <span className="font-semibold text-slate-500 dark:text-slate-400">Filter Dates:</span>
+              <div className="flex items-center space-x-1.5">
+                <span className="text-slate-400">From:</span>
+                <input
+                  type="date"
+                  value={startDateFilter}
+                  onChange={e => setStartDateFilter(e.target.value)}
+                  className="px-2.5 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white text-xs"
+                />
+              </div>
+              <div className="flex items-center space-x-1.5">
+                <span className="text-slate-400">To:</span>
+                <input
+                  type="date"
+                  value={endDateFilter}
+                  min={startDateFilter}
+                  onChange={e => setEndDateFilter(e.target.value)}
+                  className="px-2.5 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white text-xs"
+                />
+              </div>
+              {(startDateFilter || endDateFilter || searchQuery || typeFilter !== 'ALL') && (
+                <button
+                  onClick={() => {
+                    setStartDateFilter('');
+                    setEndDateFilter('');
+                    setSearchQuery('');
+                    setTypeFilter('ALL');
+                  }}
+                  className="text-xs text-brand-600 dark:text-brand-400 font-semibold hover:underline ml-auto"
+                >
+                  Clear All Filters
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Table Container */}
+          <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs sm:text-sm">
+                <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800/90 backdrop-blur-md z-10 border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider text-[11px]">
+                  <tr>
+                    {renderSortableHeader('Session ID', 'id')}
+                    {renderSortableHeader('Date & Time', 'date')}
+                    {renderSortableHeader('Type', 'chargerType')}
+                    {renderSortableHeader('Location', 'locationName')}
+                    <th className="py-3.5 px-4 text-center">SoC Δ</th>
+                    {renderSortableHeader('Energy', 'energyAddedKwh', true)}
+                    {renderSortableHeader('Cost', 'totalCost', true)}
+                    {renderSortableHeader('Rate', 'costPerKwh', true)}
+                    {renderSortableHeader('Duration', 'durationMinutes', true)}
+                    {renderSortableHeader('Odometer', 'odometerKm', true)}
+                    <th className="py-3.5 px-4 text-center">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 font-medium text-slate-700 dark:text-slate-300">
+                  {paginatedSessions.length === 0 ? (
+                    <tr>
+                      <td colSpan="11" className="py-12 text-center text-slate-400">
+                        <span className="block text-2xl mb-2">🔍</span>No sessions matched your search or filters. Try clearing some filters.
+                      </td>
+                    </tr>
+                  ) : (
+                    paginatedSessions.map(session => (
+                      <tr key={session.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition">
+                        <td className="py-3 px-4 font-mono text-xs font-semibold text-slate-500 dark:text-slate-400">
+                          {session.id}
+                        </td>
+                        <td className="py-3 px-4 whitespace-nowrap">
+                          {session.date} <span className="text-slate-400 text-xs">({session.startTime || '—'})</span>
+                        </td>
+                        <td className="py-3 px-4 whitespace-nowrap">
+                          <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${
+                            session.chargerType === 'Home AC'
+                              ? 'bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800'
+                              : session.chargerType === 'DC Fast'
+                              ? 'bg-amber-100 dark:bg-amber-950/70 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-800'
+                              : 'bg-sky-100 dark:bg-sky-950/70 text-sky-700 dark:text-sky-300 border border-sky-300 dark:border-sky-800'
+                          }`}>
+                            {session.chargerType}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 truncate max-w-xs" title={session.locationName}>
+                          {session.locationName}
+                        </td>
+                        <td className="py-3 px-4 text-center whitespace-nowrap">
+                          <span className="text-xs font-mono bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
+                            {session.startSoC}% → {session.endSoC}%
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono font-semibold text-slate-900 dark:text-white whitespace-nowrap">
+                          {session.energyAddedKwh} kWh
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono text-emerald-600 dark:text-emerald-400 whitespace-nowrap font-semibold">
+                          {formatRupee(session.totalCost)}
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                          {formatRupee(session.costPerKwh)}/kWh
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                          {formatDuration(session.durationMinutes)}
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                          {session.odometerKm ? `${session.odometerKm.toLocaleString()} km` : '—'}
+                        </td>
+                        <td className="py-3 px-4 text-center whitespace-nowrap">
+                          <div className="flex items-center justify-center space-x-1.5">
+                            <button
+                              onClick={() => onEdit(session)}
+                              title="Edit session"
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-brand-500 hover:bg-brand-50 dark:hover:bg-brand-950/40 transition"
+                            >
+                              <Icons.Edit className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => onDelete(session.id)}
+                              title="Delete session"
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 transition"
+                            >
+                              <Icons.Trash className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination Controls */}
+            {totalPages > 1 && (
+              <div className="p-4 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                <span>
+                  Showing {((currentPage - 1) * pageSize) + 1} to {Math.min(currentPage * pageSize, processedSessions.length)} of {processedSessions.length} sessions
+                </span>
+                <div className="flex items-center space-x-1.5">
+                  <button
+                    disabled={currentPage === 1}
+                    onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                    className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+                  >
+                    Previous
+                  </button>
+                  <span className="font-semibold px-2">Page {currentPage} of {totalPages}</span>
+                  <button
+                    disabled={currentPage === totalPages}
+                    onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                    className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // --- ADD / EDIT SESSION MODAL WITH COMPREHENSIVE VALIDATION ---
+    function AddEditSessionModal({ session, onSave, onClose }) {
+      const isEdit = Boolean(session && session.id);
+
+      const [formData, setFormData] = useState({
+        id: session?.id || `EV-CHG-${Date.now().toString().slice(-4)}`,
+        date: session?.date || new Date().toISOString().split('T')[0],
+        startTime: session?.startTime || '22:00',
+        chargerType: session?.chargerType || 'Home AC',
+        locationName: session?.locationName || 'Home - Garage Wallbox (7.4 kW)',
+        startSoC: session?.startSoC !== undefined ? session.startSoC : 30,
+        endSoC: session?.endSoC !== undefined ? session.endSoC : 80,
+        energyAddedKwh: session?.energyAddedKwh !== undefined ? session.energyAddedKwh : 40.5,
+        costPerKwh: session?.costPerKwh !== undefined ? session.costPerKwh : 12.0,
+        totalCost: session?.totalCost !== undefined ? session.totalCost : 486.0,
+        durationMinutes: session?.durationMinutes !== undefined ? session.durationMinutes : 320,
+        odometerKm: session?.odometerKm !== undefined ? session.odometerKm : 42350
+      });
+
+      const [errors, setErrors] = useState({});
+
+      // Auto-calculate energy based on SoC change
+      const handleSoCChange = (startVal, endVal) => {
+        const s = Number(startVal);
+        const e = Number(endVal);
+        const newForm = { ...formData, startSoC: s, endSoC: e };
+
+        if (!isNaN(s) && !isNaN(e) && e > s) {
+          // Estimated ~75 kWh battery with 8% thermal/charging overhead
+          const estKwh = Math.round(((e - s) / 100 * 75 * 1.08) * 10) / 10;
+          const cost = Math.round(estKwh * formData.costPerKwh * 100) / 100;
+          newForm.energyAddedKwh = estKwh;
+          newForm.totalCost = cost;
+        }
+        setFormData(newForm);
+      };
+
+      // Auto-calculate cost when Energy or Rate changes
+      const handleEnergyChange = (val) => {
+        const kwh = Number(val);
+        const cost = Math.round(kwh * formData.costPerKwh * 100) / 100;
+        setFormData(prev => ({ ...prev, energyAddedKwh: val, totalCost: isNaN(cost) ? 0 : cost }));
+      };
+
+      const handleRateChange = (val) => {
+        const rate = Number(val);
+        const cost = Math.round(formData.energyAddedKwh * rate * 100) / 100;
+        setFormData(prev => ({ ...prev, costPerKwh: val, totalCost: isNaN(cost) ? 0 : cost }));
+      };
+
+      const handleTypeChange = (type) => {
+        let defaultLoc = formData.locationName;
+        let rate = formData.costPerKwh;
+        let duration = formData.durationMinutes;
+
+        if (type === 'Home AC') {
+          defaultLoc = 'Home - Garage Wallbox (7.4 kW)';
+          rate = 12.0;
+          duration = 320;
+        } else if (type === 'DC Fast') {
+          defaultLoc = 'Tesla Supercharger - Highway 101';
+          rate = 38.5;
+          duration = 35;
+        } else if (type === 'Public AC') {
+          defaultLoc = 'Municipal Commuter Parking (L2)';
+          rate = 18.0;
+          duration = 120;
+        }
+
+        const cost = Math.round(formData.energyAddedKwh * rate * 100) / 100;
+        setFormData(prev => ({
+          ...prev,
+          chargerType: type,
+          locationName: defaultLoc,
+          costPerKwh: rate,
+          durationMinutes: duration,
+          totalCost: cost
+        }));
+      };
+
+      // Validation logic
+      const validate = () => {
+        const errs = {};
+        if (!formData.date) errs.date = 'Date is required.';
+        if (!formData.locationName || !formData.locationName.trim()) {
+          errs.locationName = 'Location name is required.';
+        }
+        if (formData.startSoC < 0 || formData.startSoC > 100) {
+          errs.startSoC = 'Start SoC must be between 0% and 100%.';
+        }
+        if (formData.endSoC < 0 || formData.endSoC > 100) {
+          errs.endSoC = 'End SoC must be between 0% and 100%.';
+        }
+        if (Number(formData.endSoC) <= Number(formData.startSoC)) {
+          errs.endSoC = 'End battery SoC must be strictly greater than Start SoC.';
+        }
+        if (!formData.energyAddedKwh || Number(formData.energyAddedKwh) <= 0) {
+          errs.energyAddedKwh = 'Energy added must be greater than 0 kWh.';
+        }
+        if (formData.costPerKwh === '' || Number(formData.costPerKwh) < 0) {
+          errs.costPerKwh = 'Cost per kWh cannot be negative.';
+        }
+        if (!formData.durationMinutes || Number(formData.durationMinutes) <= 0) {
+          errs.durationMinutes = 'Duration must be greater than 0 minutes.';
+        }
+        return errs;
+      };
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        const errs = validate();
+        if (Object.keys(errs).length > 0) {
+          setErrors(errs);
+          return;
+        }
+
+        const cleanedSession = {
+          id: formData.id,
+          date: formData.date,
+          startTime: formData.startTime || '22:00',
+          durationMinutes: Number(formData.durationMinutes),
+          energyAddedKwh: Number(formData.energyAddedKwh),
+          startSoC: Number(formData.startSoC),
+          endSoC: Number(formData.endSoC),
+          chargerType: formData.chargerType,
+          locationName: formData.locationName.trim(),
+          costPerKwh: Number(formData.costPerKwh),
+          totalCost: Number(formData.totalCost),
+          odometerKm: formData.odometerKm ? Number(formData.odometerKm) : undefined
+        };
+
+        onSave(cleanedSession);
+      };
+
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm overflow-y-auto">
+          <div className="relative w-full max-w-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-2xl p-6 sm:p-8 space-y-6 animate-in fade-in zoom-in-95 duration-150">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-4">
+              <div>
+                <h3 className="text-xl font-bold text-slate-900 dark:text-white">
+                  {isEdit ? 'Edit Charging Session' : 'Log New Charging Session'}
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  {isEdit ? `Updating recorded log: ${formData.id}` : 'Record a new charging event into local storage'}
+                </p>
+              </div>
+              <button
+                onClick={onClose}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+              >
+                <Icons.Close className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Form */}
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Date */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Date <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={formData.date}
+                    onChange={e => {
+                      setFormData({ ...formData, date: e.target.value });
+                      if (errors.date) setErrors({ ...errors, date: null });
+                    }}
+                    className={`w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border text-sm focus:ring-2 focus:ring-brand-500 ${
+                      errors.date ? 'border-rose-500 dark:border-rose-500' : 'border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white'
+                    }`}
+                  />
+                  {errors.date && <p className="text-[11px] text-rose-500 mt-1">{errors.date}</p>}
+                </div>
+
+                {/* Start Time */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Start Time
+                  </label>
+                  <input
+                    type="time"
+                    value={formData.startTime}
+                    onChange={e => setFormData({ ...formData, startTime: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-brand-500"
+                  />
+                </div>
+
+                {/* Charger Type */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Charger Type
+                  </label>
+                  <select
+                    value={formData.chargerType}
+                    onChange={e => handleTypeChange(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-brand-500"
+                  >
+                    <option value="Home AC">Home AC (Level 2)</option>
+                    <option value="DC Fast">DC Fast / Supercharger</option>
+                    <option value="Public AC">Public AC (Level 2)</option>
+                  </select>
+                </div>
+
+                {/* Location Name */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Location / Station Name <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Home Garage, Tesla Supercharger"
+                    value={formData.locationName}
+                    onChange={e => {
+                      setFormData({ ...formData, locationName: e.target.value });
+                      if (errors.locationName) setErrors({ ...errors, locationName: null });
+                    }}
+                    className={`w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border text-sm focus:ring-2 focus:ring-brand-500 ${
+                      errors.locationName ? 'border-rose-500 dark:border-rose-500' : 'border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white'
+                    }`}
+                  />
+                  {errors.locationName && <p className="text-[11px] text-rose-500 mt-1">{errors.locationName}</p>}
+                </div>
+
+                {/* Start SoC (%) */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Start Battery SoC (%) <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    required
+                    value={formData.startSoC}
+                    onChange={e => handleSoCChange(e.target.value, formData.endSoC)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-brand-500"
+                  />
+                  {errors.startSoC && <p className="text-[11px] text-rose-500 mt-1">{errors.startSoC}</p>}
+                </div>
+
+                {/* End SoC (%) */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    End Battery SoC (%) <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    required
+                    value={formData.endSoC}
+                    onChange={e => handleSoCChange(formData.startSoC, e.target.value)}
+                    className={`w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border text-sm focus:ring-2 focus:ring-brand-500 ${
+                      errors.endSoC ? 'border-rose-500 dark:border-rose-500' : 'border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white'
+                    }`}
+                  />
+                  {errors.endSoC && <p className="text-[11px] text-rose-500 mt-1">{errors.endSoC}</p>}
+                </div>
+
+                {/* Energy Added (kWh) */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Energy Added (kWh) <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0.1"
+                    required
+                    value={formData.energyAddedKwh}
+                    onChange={e => handleEnergyChange(e.target.value)}
+                    className={`w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border text-sm focus:ring-2 focus:ring-brand-500 ${
+                      errors.energyAddedKwh ? 'border-rose-500 dark:border-rose-500' : 'border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-mono'
+                    }`}
+                  />
+                  {errors.energyAddedKwh && <p className="text-[11px] text-rose-500 mt-1">{errors.energyAddedKwh}</p>}
+                </div>
+
+                {/* Rate per kWh (₹) */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Rate per kWh (₹) <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    required
+                    value={formData.costPerKwh}
+                    onChange={e => handleRateChange(e.target.value)}
+                    className={`w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border text-sm focus:ring-2 focus:ring-brand-500 ${
+                      errors.costPerKwh ? 'border-rose-500 dark:border-rose-500' : 'border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-mono'
+                    }`}
+                  />
+                  {errors.costPerKwh && <p className="text-[11px] text-rose-500 mt-1">{errors.costPerKwh}</p>}
+                </div>
+
+                {/* Total Cost (Auto-calculated) */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                      Total Cost (₹)
+                    </label>
+                    <span className="text-[10px] text-brand-600 dark:text-brand-400 font-medium">Auto-calculated</span>
+                  </div>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={formData.totalCost}
+                    onChange={e => setFormData({ ...formData, totalCost: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white text-sm font-mono font-semibold focus:ring-2 focus:ring-brand-500"
+                  />
+                </div>
+
+                {/* Duration (minutes) */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Duration (minutes) <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    required
+                    value={formData.durationMinutes}
+                    onChange={e => {
+                      setFormData({ ...formData, durationMinutes: e.target.value });
+                      if (errors.durationMinutes) setErrors({ ...errors, durationMinutes: null });
+                    }}
+                    className={`w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border text-sm focus:ring-2 focus:ring-brand-500 ${
+                      errors.durationMinutes ? 'border-rose-500 dark:border-rose-500' : 'border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-mono'
+                    }`}
+                  />
+                  {errors.durationMinutes && <p className="text-[11px] text-rose-500 mt-1">{errors.durationMinutes}</p>}
+                </div>
+
+                {/* Odometer (km) */}
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Vehicle Odometer (km)
+                  </label>
+                  <input
+                    type="number"
+                    placeholder="e.g. 42350"
+                    value={formData.odometerKm || ''}
+                    onChange={e => setFormData({ ...formData, odometerKm: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white text-sm font-mono focus:ring-2 focus:ring-brand-500"
+                  />
+                </div>
+              </div>
+
+              {/* Form Buttons */}
+              <div className="flex items-center justify-end space-x-3 pt-4 border-t border-slate-100 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-4 py-2 text-xs sm:text-sm font-semibold rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 text-xs sm:text-sm font-semibold rounded-xl bg-brand-500 hover:bg-brand-600 text-white shadow-sm shadow-brand-500/30 transition"
+                >
+                  {isEdit ? 'Update Session' : 'Save Session'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    // --- INSIGHTS VIEW COMPONENT (Plain Language Intelligence & Projections) ---
+    function InsightsView({ sessions }) {
+      // 1. Most Expensive Charging Location
+      const mostExpensiveLocation = useMemo(() => {
+        if (!sessions || sessions.length === 0) return null;
+        const map = {};
+        sessions.forEach(s => {
+          const loc = s.locationName || 'Unknown Location';
+          if (!map[loc]) map[loc] = { name: loc, energy: 0, cost: 0, count: 0, type: s.chargerType };
+          map[loc].energy += (Number(s.energyAddedKwh) || 0);
+          map[loc].cost += (Number(s.totalCost) || 0);
+          map[loc].count += 1;
+        });
+        const list = Object.values(map).map(l => ({
+          ...l,
+          avgRate: l.energy > 0 ? (l.cost / l.energy) : 0
+        }));
+        list.sort((a, b) => b.avgRate - a.avgRate);
+        return list[0] || null;
+      }, [sessions]);
+
+      // 2. Cheapest vs. Most Expensive Charger Type per kWh
+      const chargerRateComparison = useMemo(() => {
+        if (!sessions || sessions.length === 0) return null;
+        const types = {};
+        sessions.forEach(s => {
+          const t = s.chargerType || 'Public AC';
+          if (!types[t]) types[t] = { name: t, energy: 0, cost: 0, count: 0 };
+          types[t].energy += (Number(s.energyAddedKwh) || 0);
+          types[t].cost += (Number(s.totalCost) || 0);
+          types[t].count += 1;
+        });
+        const list = Object.values(types).map(t => ({
+          ...t,
+          avgRate: t.energy > 0 ? (t.cost / t.energy) : 0
+        })).filter(t => t.energy > 0);
+
+        list.sort((a, b) => a.avgRate - b.avgRate);
+        if (list.length === 0) return null;
+
+        const cheapest = list[0];
+        const mostExpensive = list[list.length - 1];
+        const multiplier = cheapest.avgRate > 0 ? (mostExpensive.avgRate / cheapest.avgRate).toFixed(1) : '1.0';
+
+        return { list, cheapest, mostExpensive, multiplier };
+      }, [sessions]);
+
+      // 3. Peak Charging Hours
+      const peakHours = useMemo(() => {
+        if (!sessions || sessions.length === 0) return null;
+        const hours = Array.from({ length: 24 }, (_, i) => ({ hour: i, count: 0, energy: 0 }));
+        sessions.forEach(s => {
+          if (s.startTime) {
+            const h = parseInt(s.startTime.split(':')[0], 10);
+            if (!isNaN(h) && h >= 0 && h < 24) {
+              hours[h].count += 1;
+              hours[h].energy += (Number(s.energyAddedKwh) || 0);
+            }
+          }
+        });
+        hours.sort((a, b) => b.count - a.count);
+        const top = hours[0];
+        const formatH = (h) => (h === 0 ? '12 AM' : h === 12 ? '12 PM' : h > 12 ? `${h - 12} PM` : `${h} AM`);
+        const windowStr = `${formatH(top.hour)} – ${formatH((top.hour + 1) % 24)}`;
+        const percentage = sessions.length > 0 ? Math.round((top.count / sessions.length) * 100) : 0;
+        return { topHour: formatH(top.hour), windowStr, count: top.count, percentage, energy: top.energy };
+      }, [sessions]);
+
+      // 4. Month-over-Month (MoM) Change in Energy Use
+      const momChange = useMemo(() => {
+        if (!sessions || sessions.length === 0) return null;
+        const monthMap = {};
+        sessions.forEach(s => {
+          if (!s.date) return;
+          const key = s.date.slice(0, 7);
+          if (!monthMap[key]) {
+            const [year, month] = key.split('-');
+            const d = new Date(Number(year), Number(month) - 1, 1);
+            monthMap[key] = {
+              key,
+              label: d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
+              energy: 0,
+              cost: 0
+            };
+          }
+          monthMap[key].energy += (Number(s.energyAddedKwh) || 0);
+          monthMap[key].cost += (Number(s.totalCost) || 0);
+        });
+        const sorted = Object.values(monthMap).sort((a, b) => a.key.localeCompare(b.key));
+        if (sorted.length < 2) return null;
+
+        const curr = sorted[sorted.length - 1];
+        const prev = sorted[sorted.length - 2];
+        const diffKwh = curr.energy - prev.energy;
+        const pct = prev.energy > 0 ? (diffKwh / prev.energy) * 100 : 0;
+
+        return {
+          curr,
+          prev,
+          diffKwh: Math.round(diffKwh * 10) / 10,
+          pctChange: Math.round(pct * 10) / 10
+        };
+      }, [sessions]);
+
+      // 5. Estimated Savings if All Charging was Done at Home
+      const allHomeSavings = useMemo(() => {
+        if (!sessions || sessions.length === 0) return null;
+        let homeEnergy = 0;
+        let homeCost = 0;
+        let nonHomeEnergy = 0;
+        let nonHomeCost = 0;
+
+        sessions.forEach(s => {
+          const e = Number(s.energyAddedKwh) || 0;
+          const c = Number(s.totalCost) || 0;
+          if (s.chargerType === 'Home AC') {
+            homeEnergy += e;
+            homeCost += c;
+          } else {
+            nonHomeEnergy += e;
+            nonHomeCost += c;
+          }
+        });
+
+        const avgHomeRate = homeEnergy > 0 ? (homeCost / homeEnergy) : 12.0;
+        const hypotheticalHomeCost = nonHomeEnergy * avgHomeRate;
+        const savings = Math.max(0, nonHomeCost - hypotheticalHomeCost);
+
+        return {
+          avgHomeRate: Math.round(avgHomeRate * 100) / 100,
+          nonHomeEnergy: Math.round(nonHomeEnergy * 10) / 10,
+          nonHomeCost: Math.round(nonHomeCost * 100) / 100,
+          hypotheticalHomeCost: Math.round(hypotheticalHomeCost * 100) / 100,
+          savings: Math.round(savings * 100) / 100
+        };
+      }, [sessions]);
+
+      // 6. Projected Cost for Next Month Based on Trend
+      const nextMonthProjection = useMemo(() => {
+        if (!sessions || sessions.length === 0) return null;
+        const monthMap = {};
+        sessions.forEach(s => {
+          if (!s.date) return;
+          const key = s.date.slice(0, 7);
+          if (!monthMap[key]) {
+            const [year, month] = key.split('-');
+            const d = new Date(Number(year), Number(month) - 1, 1);
+            monthMap[key] = {
+              key,
+              year: Number(year),
+              month: Number(month),
+              label: d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
+              energy: 0,
+              cost: 0
+            };
+          }
+          monthMap[key].energy += (Number(s.energyAddedKwh) || 0);
+          monthMap[key].cost += (Number(s.totalCost) || 0);
+        });
+        const sorted = Object.values(monthMap).sort((a, b) => a.key.localeCompare(b.key));
+        if (sorted.length === 0) return null;
+
+        const last = sorted[sorted.length - 1];
+        let nextY = last.year;
+        let nextM = last.month + 1;
+        if (nextM > 12) {
+          nextM = 1;
+          nextY += 1;
+        }
+        const nextDate = new Date(nextY, nextM - 1, 1);
+        const nextMonthLabel = nextDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+        const totalEnergy = sessions.reduce((acc, s) => acc + (Number(s.energyAddedKwh) || 0), 0);
+        const totalCost = sessions.reduce((acc, s) => acc + (Number(s.totalCost) || 0), 0);
+        const weightedAvgRate = totalEnergy > 0 ? (totalCost / totalEnergy) : 15;
+
+        let projectedKwh = last.energy;
+        if (sorted.length >= 3) {
+          const last3 = sorted.slice(-3);
+          const avgKwh = last3.reduce((acc, m) => acc + m.energy, 0) / 3;
+          const trendRate = (last3[2].energy - last3[0].energy) / (last3[0].energy || 1) / 2;
+          const clampedTrend = Math.max(-0.08, Math.min(0.08, trendRate));
+          projectedKwh = avgKwh * (1 + clampedTrend);
+        }
+
+        const projectedCost = projectedKwh * weightedAvgRate;
+
+        return {
+          nextMonthLabel,
+          projectedKwh: Math.round(projectedKwh * 10) / 10,
+          projectedCost: Math.round(projectedCost * 100) / 100,
+          weightedAvgRate: Math.round(weightedAvgRate * 100) / 100
+        };
+      }, [sessions]);
+
+      return (
+        <div className="space-y-8 animate-in fade-in duration-200">
+          {/* Header Banner */}
+          <div className="p-6 rounded-3xl bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white shadow-xl relative overflow-hidden border border-slate-700/50">
+            <div className="absolute -right-10 -bottom-10 w-60 h-60 bg-brand-500/10 rounded-full blur-3xl pointer-events-none"></div>
+            <div className="relative z-10 max-w-3xl space-y-2">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-brand-500/20 text-brand-400 border border-brand-500/30">
+                <Icons.Zap className="w-3.5 h-3.5 text-brand-400" />
+                Automated Energy Intelligence
+              </span>
+              <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
+                Executive EV Energy & Cost Insights
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+                We analyzed all {sessions.length} recorded charging events across locations, tariffs, time-of-use schedules, and consumption trends. Here is your operational summary explained in plain language.
+              </p>
+            </div>
+          </div>
+
+          {/* 6 Structured Insight Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            
+            {/* 1. Most Expensive Charging Location */}
+            <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between space-y-4">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="p-2.5 rounded-2xl bg-amber-50 dark:bg-amber-950/60 text-amber-500 border border-amber-200 dark:border-amber-800/60">
+                    <Icons.Dollar className="w-5 h-5" />
+                  </span>
+                  <span className="text-[11px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300">
+                    Highest Unit Cost
+                  </span>
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                    Most Expensive Location
+                  </h3>
+                  <div className="text-xl font-extrabold text-slate-900 dark:text-white mt-1 truncate" title={mostExpensiveLocation?.name}>
+                    {mostExpensiveLocation ? mostExpensiveLocation.name : '—'}
+                  </div>
+                </div>
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {mostExpensiveLocation ? (
+                    <>
+                      At <strong className="text-amber-600 dark:text-amber-400 font-bold">{formatRupee(mostExpensiveLocation.avgRate)}/kWh</strong>, this station represents your highest unit price. Across <strong>{mostExpensiveLocation.count} sessions</strong>, you spent a cumulative <strong>{formatRupee(mostExpensiveLocation.cost)}</strong> to take on {mostExpensiveLocation.energy.toFixed(1)} kWh.
+                    </>
+                  ) : 'No location data available.'}
+                </p>
+              </div>
+              <div className="pt-3 border-t border-slate-100 dark:border-slate-800/80 text-[11px] text-slate-400">
+                Tip: Reserve this location for necessary road-trip top-ups only.
+              </div>
+            </div>
+
+            {/* 2. Cheapest vs. Most Expensive Charger Type */}
+            <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between space-y-4">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="p-2.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-500 border border-emerald-200 dark:border-emerald-800/60">
+                    <Icons.TrendingUp className="w-5 h-5" />
+                  </span>
+                  <span className="text-[11px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300">
+                    {chargerRateComparison?.multiplier}× Rate Spread
+                  </span>
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                    Charger Type Cost Spread
+                  </h3>
+                  <div className="text-xl font-extrabold text-slate-900 dark:text-white mt-1">
+                    {chargerRateComparison ? `${formatRupee(chargerRateComparison.cheapest.avgRate)} vs. ${formatRupee(chargerRateComparison.mostExpensive.avgRate)}` : '—'}
+                  </div>
+                </div>
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {chargerRateComparison ? (
+                    <>
+                      <strong className="text-emerald-600 dark:text-emerald-400">{chargerRateComparison.cheapest.name}</strong> is your cheapest option at <strong>{formatRupee(chargerRateComparison.cheapest.avgRate)}/kWh</strong>, whereas <strong className="text-amber-600 dark:text-amber-400">{chargerRateComparison.mostExpensive.name}</strong> costs <strong>{formatRupee(chargerRateComparison.mostExpensive.avgRate)}/kWh</strong>. That makes DC Fast charging <strong className="text-slate-900 dark:text-white">{chargerRateComparison.multiplier}× more expensive</strong> per kWh.
+                    </>
+                  ) : 'No charger comparison available.'}
+                </p>
+              </div>
+              <div className="pt-3 border-t border-slate-100 dark:border-slate-800/80 text-[11px] text-slate-400">
+                Benchmark: Domestic off-peak power saves over 65% vs highway DCFC.
+              </div>
+            </div>
+
+            {/* 3. Peak Charging Hours */}
+            <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between space-y-4">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="p-2.5 rounded-2xl bg-purple-50 dark:bg-purple-950/60 text-purple-500 border border-purple-200 dark:border-purple-800/60">
+                    <Icons.Clock className="w-5 h-5" />
+                  </span>
+                  <span className="text-[11px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300">
+                    {peakHours?.percentage}% of Sessions
+                  </span>
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                    Peak Charging Hours
+                  </h3>
+                  <div className="text-xl font-extrabold text-slate-900 dark:text-white mt-1">
+                    {peakHours ? peakHours.windowStr : '—'}
+                  </div>
+                </div>
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {peakHours ? (
+                    <>
+                      Your highest frequency charging window occurs between <strong className="text-purple-600 dark:text-purple-400">{peakHours.windowStr}</strong>, representing <strong className="text-slate-900 dark:text-white">{peakHours.count} sessions</strong> ({peakHours.percentage}% of all logs). This reflects disciplined overnight charging scheduled during lowest grid demand tariffs.
+                    </>
+                  ) : 'No charging hour data available.'}
+                </p>
+              </div>
+              <div className="pt-3 border-t border-slate-100 dark:border-slate-800/80 text-[11px] text-slate-400">
+                Smart Charging: Consistent late-night plug-in optimizes battery health.
+              </div>
+            </div>
+
+            {/* 4. Month-over-Month (MoM) Change in Energy Use */}
+            <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between space-y-4">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="p-2.5 rounded-2xl bg-cyan-50 dark:bg-cyan-950/60 text-cyan-500 border border-cyan-200 dark:border-cyan-800/60">
+                    <Icons.Zap className="w-5 h-5" />
+                  </span>
+                  <span className={`text-[11px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full ${
+                    momChange && momChange.pctChange >= 0
+                      ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300'
+                      : 'bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300'
+                  }`}>
+                    {momChange ? `${momChange.pctChange >= 0 ? '+' : ''}${momChange.pctChange}% MoM` : 'MoM'}
+                  </span>
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                    Month-over-Month Energy Trend
+                  </h3>
+                  <div className="text-xl font-extrabold text-slate-900 dark:text-white mt-1">
+                    {momChange ? `${momChange.diffKwh >= 0 ? '+' : ''}${momChange.diffKwh} kWh` : '—'}
+                  </div>
+                </div>
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {momChange ? (
+                    <>
+                      In <strong>{momChange.curr.label}</strong>, you drew <strong>{momChange.curr.energy.toFixed(1)} kWh</strong>, compared to <strong>{momChange.prev.energy.toFixed(1)} kWh</strong> in {momChange.prev.label}. This marks a <strong className={momChange.pctChange >= 0 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}>{Math.abs(momChange.pctChange)}% {momChange.pctChange >= 0 ? 'rise' : 'drop'}</strong> in energy consumption between the two most recent cycles.
+                    </>
+                  ) : 'Need at least 2 recorded months for MoM comparison.'}
+                </p>
+              </div>
+              <div className="pt-3 border-t border-slate-100 dark:border-slate-800/80 text-[11px] text-slate-400">
+                Context: Weather shifts and seasonal road trips drive natural month-to-month swings.
+              </div>
+            </div>
+
+            {/* 5. Estimated Savings if All Charging was Done at Home */}
+            <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between space-y-4">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="p-2.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-500 border border-emerald-200 dark:border-emerald-800/60">
+                    <Icons.PlusCircle className="w-5 h-5" />
+                  </span>
+                  <span className="text-[11px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300">
+                    100% Home Scenario
+                  </span>
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                    Potential Home Charging Savings
+                  </h3>
+                  <div className="text-xl font-extrabold text-emerald-600 dark:text-emerald-400 mt-1">
+                    {allHomeSavings ? `${formatRupee(allHomeSavings.savings)} Potential` : '—'}
+                  </div>
+                </div>
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {allHomeSavings ? (
+                    <>
+                      You drew <strong>{allHomeSavings.nonHomeEnergy} kWh</strong> at public and DC fast chargers costing <strong>{formatRupee(allHomeSavings.nonHomeCost)}</strong>. Had all that power been charged at home (averaging <strong>{formatRupee(allHomeSavings.avgHomeRate)}/kWh</strong>), it would have cost only <strong>{formatRupee(allHomeSavings.hypotheticalHomeCost)}</strong> — yielding <strong>{formatRupee(allHomeSavings.savings)} in extra savings</strong>.
+                    </>
+                  ) : 'No commercial charging data to compare.'}
+                </p>
+              </div>
+              <div className="pt-3 border-t border-slate-100 dark:border-slate-800/80 text-[11px] text-slate-400">
+                Strategy: Pre-charging to 90% before weekend excursions maximizes domestic rate savings.
+              </div>
+            </div>
+
+            {/* 6. Projected Cost for Next Month Based on Trend */}
+            <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between space-y-4">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="p-2.5 rounded-2xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-500 border border-indigo-200 dark:border-indigo-800/60">
+                    <Icons.Calendar className="w-5 h-5" />
+                  </span>
+                  <span className="text-[11px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300">
+                    Forward Forecast
+                  </span>
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                    Projected Cost for {nextMonthProjection?.nextMonthLabel || 'Next Month'}
+                  </h3>
+                  <div className="text-xl font-extrabold text-indigo-600 dark:text-indigo-400 mt-1">
+                    {nextMonthProjection ? formatRupee(nextMonthProjection.projectedCost) : '—'}
+                  </div>
+                </div>
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {nextMonthProjection ? (
+                    <>
+                      Projected on your recent 3-month rolling usage trajectory and current blended unit cost of <strong>{formatRupee(nextMonthProjection.weightedAvgRate)}/kWh</strong>, your anticipated energy draw for <strong>{nextMonthProjection.nextMonthLabel}</strong> is approximately <strong>~{nextMonthProjection.projectedKwh} kWh</strong>, forecast at <strong>{formatRupee(nextMonthProjection.projectedCost)}</strong>.
+                    </>
+                  ) : 'Calculating forward trend...'}
+                </p>
+              </div>
+              <div className="pt-3 border-t border-slate-100 dark:border-slate-800/80 text-[11px] text-slate-400">
+                Predictive Model: Incorporates rolling multi-month baseline and utility distribution.
+              </div>
+            </div>
+
+          </div>
+
+          {/* Actionable Recommendations Checklist */}
+          <div className="p-6 sm:p-8 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-brand-500"></span>
+                Actionable Efficiency Takeaways
+              </h3>
+              <span className="text-xs text-slate-400">Fleet Optimization</span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 space-y-1.5">
+                <div className="font-bold text-slate-900 dark:text-white">1. Schedule Preconditioning</div>
+                <p className="text-slate-600 dark:text-slate-400 leading-relaxed">
+                  Warm or cool the battery while still plugged into your home charger at night to preserve battery range during initial driving kilometers.
+                </p>
+              </div>
+              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 space-y-1.5">
+                <div className="font-bold text-slate-900 dark:text-white">2. Avoid Fast Charging Over 80%</div>
+                <p className="text-slate-600 dark:text-slate-400 leading-relaxed">
+                  DC fast charging power significantly tapers above 80% SoC. Unplugging around 75-80% avoids expensive idle or reduced charge rate fees.
+                </p>
+              </div>
+              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 space-y-1.5">
+                <div className="font-bold text-slate-900 dark:text-white">3. Off-Peak Night Timers</div>
+                <p className="text-slate-600 dark:text-slate-400 leading-relaxed">
+                  Locking vehicle charging start times between 10 PM and 5 AM guarantees you capture lowest tier electricity rates year-round.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+<div id="vt-toast" class="vt-hidden"></div>
+</body>
+</html>

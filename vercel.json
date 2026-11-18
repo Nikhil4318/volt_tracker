@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "name": "volttrack-ev-analytics",
+  "routes": [
+    { "src": "/sample_data.js",              "dest": "/sample_data.js" },
+    { "src": "/sample_charging_sessions.json","dest": "/sample_charging_sessions.json" },
+    { "src": "/favicon.svg",                 "dest": "/favicon.svg" },
+    { "src": "/(.*)",                        "dest": "/index.html" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options",        "value": "SAMEORIGIN" },
+        { "key": "Referrer-Policy",        "value": "strict-origin-when-cross-origin" }
+      ]
+    },
+    {
+      "source": "/sample_data.js",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=86400" }]
+    },
+    {
+      "source": "/favicon.svg",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=604800, immutable" }]
+    }
+  ]
+}
